@@ -1,0 +1,56 @@
+Campaign: AWS Lab Discovery (discovery-001)
+Run ID: 652d5667
+
+=== Summary ===
+{
+  "campaign_id": "discovery-001",
+  "campaign_name": "AWS Lab Discovery",
+  "run_id": "652d5667",
+  "finished_at": "2026-02-12T05:36:19.801343Z",
+  "steps": [
+    {
+      "step_index": 0,
+      "technique_id": "identity_discovery",
+      "success": true,
+      "skipped": true,
+      "reason": "dry_run"
+    },
+    {
+      "step_index": 1,
+      "technique_id": "permission_enumeration",
+      "success": true,
+      "skipped": true,
+      "reason": "dry_run"
+    },
+    {
+      "step_index": 2,
+      "technique_id": "role_trust_analysis",
+      "success": true,
+      "skipped": true,
+      "reason": "dry_run"
+    },
+    {
+      "step_index": 3,
+      "technique_id": "s3_enumeration",
+      "success": true,
+      "skipped": true,
+      "reason": "dry_run"
+    },
+    {
+      "step_index": 4,
+      "technique_id": "security_group_enumeration",
+      "success": true,
+      "skipped": true,
+      "reason": "dry_run"
+    }
+  ],
+  "accounts_count": 0,
+  "roles_count": 0,
+  "resources_count": 0,
+  "findings_count": 0
+}
+
+=== Findings ===
+
+=== Timeline (events) ===
+  2026-02-12T05:36:19.801324Z | orchestrator | campaign.start | success

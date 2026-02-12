@@ -47,7 +47,7 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern[str], str, str]] = [
 MISCONFIG_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     (
         "s3_public_acl",
-        re.compile(r"'(?i)PublicRead|acl.*public"),
+        re.compile(r"PublicRead|acl.*public", re.IGNORECASE),
         "s3_public",
     ),
     (

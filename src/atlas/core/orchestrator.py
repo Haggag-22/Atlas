@@ -47,6 +47,7 @@ class CampaignOrchestrator:
         dry = dry_run if dry_run is not None else self.config.safety.dry_run
 
         recorder = get_recorder()
+        recorder.clear()
         if self.config.telemetry.output_path:
             recorder.set_output_path(self.config.telemetry.output_path)
         recorder.record(

@@ -30,6 +30,15 @@ class SafetyConfig(BaseModel):
     jitter_seconds: float = 0.5
     lab_only_banner: bool = True
 
+    @field_validator("allowed_account_ids", "allowed_regions", mode="before")
+    @classmethod
+    def coerce_list(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [x.strip() for x in v.split(",") if x.strip()]
+        return list(v)
+
 
 class TelemetryConfig(BaseModel):
     """Telemetry recording options."""
@@ -58,15 +67,6 @@ class AtlasConfig(BaseModel):
     recon: ReconConfig = Field(default_factory=ReconConfig)
     aws_profile: str | None = None
     aws_region: str = "us-east-1"
-
-    @field_validator("allowed_account_ids", "allowed_regions", mode="before")
-    @classmethod
-    def coerce_list(cls, v: Any) -> list[str]:
-        if v is None:
-            return []
-        if isinstance(v, str):
-            return [x.strip() for x in v.split(",") if x.strip()]
-        return list(v)
 
 
 class TechniqueStepConfig(BaseModel):

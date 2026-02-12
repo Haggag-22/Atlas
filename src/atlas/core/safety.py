@@ -2,8 +2,6 @@
 
 from atlas.core.config import SafetyConfig
 
-F = TypeVar("F", bound=Callable[..., object])
-
 _LAB_BANNER = """
 ╔══════════════════════════════════════════════════════════════════════╗
 ║  ATLAS - AWS Cloud Adversary Emulation                               ║

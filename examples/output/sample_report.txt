@@ -1,0 +1,23 @@
+Campaign: AWS Lab Discovery (discovery-001)
+Run ID: a1b2c3d4
+
+=== Summary ===
+{
+  "campaign_id": "discovery-001",
+  "campaign_name": "AWS Lab Discovery",
+  "run_id": "a1b2c3d4",
+  "finished_at": "2025-02-12T12:00:00.000000Z",
+  "steps": [...],
+  "accounts_count": 1,
+  "roles_count": 5,
+  "resources_count": 12,
+  "findings_count": 0
+}
+
+=== Findings ===
+(No findings in this sample run.)
+
+=== Timeline (events) ===
+  2025-02-12T11:59:00Z | orchestrator | campaign.start | success
+  2025-02-12T11:59:01Z | identity_discovery | sts:GetCallerIdentity | success
+  2025-02-12T11:59:02Z | identity_discovery | iam:ListUsers | success

@@ -86,17 +86,18 @@ class IdentityDiscoveryPlugin(TechniquePlugin):
                 error=str(e),
                 outputs={"caller_identity": identity, "account_id": account_id, "users": users},
             )
+        account_alias = _get_account_alias(iam, config)
         return TechniqueResult(
             success=True,
             message=f"Discovered {len(users)} users in account {account_id}",
             outputs={
                 "caller_identity": identity,
                 "account_id": account_id,
-                "account_alias": _get_account_alias(iam, config),
+                "account_alias": account_alias,
                 "users": users,
                 "accounts": [{
                     "account_id": account_id,
-                    "account_alias": _get_account_alias(iam, config),
+                    "account_alias": account_alias,
                     "source": "identity_discovery",
                 }],
             },
