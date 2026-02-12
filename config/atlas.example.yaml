@@ -1,4 +1,5 @@
-# Example Atlas config - copy to atlas.yaml and set your lab account/regions
+# Example Atlas config - copy to atlas.yaml and set your lab account/regions.
+# Never use in production; restrict allowed_account_ids and allowed_regions.
 
 safety:
   # Restrict to your lab account(s) only
