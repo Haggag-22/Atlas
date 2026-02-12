@@ -1,0 +1,36 @@
+# Bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build and install
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Coverage and reports
+htmlcov/
+.coverage
+.coverage.*
+
+# Local config and outputs (keep examples)
+output/
+recon_findings.json
+atlas.yaml
+.atlas.local.yaml
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+.venv/
+venv/
+env/
