@@ -1,5 +1,6 @@
 # Atlas - AWS Cloud Adversary Emulation
 # Run in lab accounts only.
+# Use: make help, make test, make run-dry, etc.
 
 PYTHON ?= python
 UV ?= uv
