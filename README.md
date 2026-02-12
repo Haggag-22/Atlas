@@ -37,7 +37,7 @@ Atlas is a Python framework for **AWS cloud adversary emulation** in lab environ
 
 ## Project structure
 
-The codebase is organized under `src/atlas/`: `cli` (entrypoint and config), `core` (config, state, plugin contract, orchestrator, safety), `plugins` (registry and technique implementations), `recon` (local scanner), `telemetry` (event schema and recorder), and `utils` (e.g. rate limiting). Example campaigns and config live in `campaigns/` and `config/`; sample outputs are in `examples/output/`.
+The codebase is organized under `src/atlas/`: `cli` (entrypoint and config), `core` (config, state, plugin contract, orchestrator, safety), `plugins` (registry and technique implementations), `recon` (local scanner), `telemetry` (event schema and recorder), and `utils` (e.g. rate limiting). Example campaigns and config live in `campaigns/` and `config/`; sample outputs are in `examples/output/`. See **CONTRIBUTING.md** for development and adding techniques.
 
 ---
 
