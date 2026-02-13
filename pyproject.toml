@@ -9,7 +9,7 @@ description = "Next-generation AWS Cloud Adversary Emulation platform"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
-authors = [{ name = "Atlas Team" }]
+authors = [{ name = "Omar" }]
 keywords = ["aws", "security", "adversary-emulation", "red-team", "cloud-security"]
 dependencies = [
     "boto3>=1.35.0",
