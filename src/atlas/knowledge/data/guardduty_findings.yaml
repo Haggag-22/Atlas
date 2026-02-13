@@ -1,0 +1,149 @@
+# =============================================================================
+# Atlas Detection Knowledge Base — GuardDuty Finding Types
+# =============================================================================
+#
+# Maps GuardDuty finding types to the conditions / API patterns that trigger
+# them.  The planner uses this to estimate whether a planned action sequence
+# might produce a GuardDuty alert.
+#
+# Fields:
+#   finding_type:    Full GuardDuty finding type string
+#   severity:        low | medium | high
+#   trigger_conditions:  Human description of what triggers this
+#   related_api_actions: API actions associated with this finding
+#   avoidance_notes:     Tradecraft notes on how to avoid triggering
+# =============================================================================
+
+findings:
+
+  # ── IAM / Credential Findings ──────────────────────────────────────────
+
+  - finding_type: "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS"
+    severity: "high"
+    trigger_conditions: "Instance role credentials used from an IP outside AWS."
+    related_api_actions:
+      - "any API call using instance credentials from non-AWS IP"
+    avoidance_notes: "Use credentials only from within AWS (EC2, Lambda, CloudShell).  Never exfiltrate instance role credentials."
+
+  - finding_type: "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.InsideAWS"
+    severity: "high"
+    trigger_conditions: "Instance role credentials used from a different AWS account or region than the instance."
+    related_api_actions:
+      - "any API call using instance credentials from different account"
+    avoidance_notes: "If pivoting via instance credentials, make calls from the same region/account where the instance runs."
+
+  - finding_type: "UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B"
+    severity: "medium"
+    trigger_conditions: "Successful console login from unusual IP."
+    related_api_actions:
+      - "console login"
+    avoidance_notes: "Avoid console login.  Stick to API/CLI."
+
+  - finding_type: "Persistence:IAMUser/UserPermissions"
+    severity: "medium"
+    trigger_conditions: "IAM user permissions changed in a way consistent with persistence (policy attachment, inline policy)."
+    related_api_actions:
+      - "iam:AttachUserPolicy"
+      - "iam:PutUserPolicy"
+      - "iam:CreateUser"
+      - "iam:CreateLoginProfile"
+    avoidance_notes: "Minimize IAM write operations.  Prefer role assumption over user creation."
+
+  # ── CloudTrail / Stealth Findings ──────────────────────────────────────
+
+  - finding_type: "Stealth:IAMUser/CloudTrailLoggingDisabled"
+    severity: "high"
+    trigger_conditions: "CloudTrail logging was stopped or trail was deleted."
+    related_api_actions:
+      - "cloudtrail:StopLogging"
+      - "cloudtrail:DeleteTrail"
+    avoidance_notes: "NEVER disable CloudTrail.  Instant high-severity alert."
+
+  - finding_type: "Stealth:IAMUser/PasswordPolicyChange"
+    severity: "low"
+    trigger_conditions: "Account password policy was weakened."
+    related_api_actions:
+      - "iam:UpdateAccountPasswordPolicy"
+    avoidance_notes: "Avoid touching password policies."
+
+  # ── S3 Findings ────────────────────────────────────────────────────────
+
+  - finding_type: "Policy:S3/BucketAnonymousAccessGranted"
+    severity: "high"
+    trigger_conditions: "S3 bucket policy or ACL grants public access."
+    related_api_actions:
+      - "s3:PutBucketPolicy"
+      - "s3:PutBucketAcl"
+    avoidance_notes: "Avoid making buckets public.  Use cross-account role assumption for exfiltration instead."
+
+  - finding_type: "Policy:S3/AccountBlockPublicAccessDisabled"
+    severity: "high"
+    trigger_conditions: "Account-level S3 public access block was disabled."
+    related_api_actions:
+      - "s3:PutAccountPublicAccessBlock"
+    avoidance_notes: "Do not modify public access blocks."
+
+  - finding_type: "Discovery:S3/MaliciousIPCaller"
+    severity: "medium"
+    trigger_conditions: "S3 API called from a known malicious IP."
+    related_api_actions:
+      - "s3:ListBuckets"
+      - "s3:GetObject"
+    avoidance_notes: "Ensure you're operating from clean IPs — not known TOR exits or threat intel blocklists."
+
+  - finding_type: "Exfiltration:S3/MaliciousIPCaller"
+    severity: "high"
+    trigger_conditions: "S3 data accessed from known malicious IP."
+    related_api_actions:
+      - "s3:GetObject"
+      - "s3:CopyObject"
+    avoidance_notes: "Same as above — use clean source IPs."
+
+  # ── EC2 Findings ───────────────────────────────────────────────────────
+
+  - finding_type: "Recon:EC2/PortProbeUnprotectedPort"
+    severity: "low"
+    trigger_conditions: "Port probe detected on unprotected EC2 port."
+    related_api_actions: []
+    avoidance_notes: "Avoid network-level probing.  Stick to API-based reconnaissance."
+
+  - finding_type: "UnauthorizedAccess:EC2/TorIPCaller"
+    severity: "medium"
+    trigger_conditions: "API calls to EC2 from a TOR exit node."
+    related_api_actions:
+      - "ec2:*"
+    avoidance_notes: "Never operate from TOR."
+
+  # ── Credential Access ──────────────────────────────────────────────────
+
+  - finding_type: "CredentialAccess:IAMUser/AnomalousBehavior"
+    severity: "medium"
+    trigger_conditions: "Anomalous API calls based on ML-modeled baseline for the identity."
+    related_api_actions:
+      - "any unusual API call for the identity's normal behavior"
+    avoidance_notes: "Understand the identity's normal behavior before using its credentials.  Favor actions that align with its baseline."
+
+  - finding_type: "Discovery:IAMUser/AnomalousBehavior"
+    severity: "low"
+    trigger_conditions: "Discovery-type API calls anomalous for the identity."
+    related_api_actions:
+      - "iam:ListUsers"
+      - "iam:ListRoles"
+      - "iam:GetAccountAuthorizationDetails"
+    avoidance_notes: "Spread enumeration over time.  Use identities that normally perform audit/admin tasks."
+
+  # ── Impact ─────────────────────────────────────────────────────────────
+
+  - finding_type: "Impact:EC2/WinRMBruteForce"
+    severity: "low"
+    trigger_conditions: "WinRM brute force detected."
+    related_api_actions: []
+    avoidance_notes: "Not applicable to API-level operations."
+
+  - finding_type: "Impact:S3/MaliciousIPCaller"
+    severity: "high"
+    trigger_conditions: "S3 destructive operations from malicious IP."
+    related_api_actions:
+      - "s3:DeleteObject"
+      - "s3:DeleteBucket"
+    avoidance_notes: "Do not perform destructive S3 operations."

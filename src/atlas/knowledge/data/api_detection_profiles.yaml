@@ -1,0 +1,813 @@
+# =============================================================================
+# Atlas Detection Knowledge Base — AWS API Detection Profiles
+# =============================================================================
+#
+# Every AWS API action that Atlas may encounter or execute gets a profile here.
+# The planner uses these scores to choose the lowest-noise attack path.
+#
+# Fields:
+#   api_action:              Full IAM action string (service:Action)
+#   service:                 AWS service short name
+#   cloudtrail_visibility:   management_read | management_write | data_read | data_write | not_logged
+#   is_read_only:            Whether this is a read-only (non-mutating) action
+#   guardduty_finding_types: GuardDuty finding types this action can trigger
+#   base_detection_score:    0.0 (invisible) to 1.0 (instant SOC alert)
+#   noise_level:             silent | low | medium | high | critical
+#   is_mutating:             Whether this modifies AWS state
+#   behavioral_notes:        Human-readable notes on detection context
+#
+# Detection score heuristic:
+#   0.0 - 0.1:  Invisible or nearly so (not logged, or universal baseline)
+#   0.1 - 0.3:  Low noise (read-only, common automation calls)
+#   0.3 - 0.5:  Medium (write calls that are common in automation)
+#   0.5 - 0.7:  High (IAM mutations, credential operations)
+#   0.7 - 1.0:  Critical (known GuardDuty triggers, rare admin operations)
+# =============================================================================
+
+profiles:
+
+  # =========================================================================
+  # STS — Security Token Service
+  # =========================================================================
+  - api_action: "sts:GetCallerIdentity"
+    service: "sts"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.02
+    noise_level: "silent"
+    is_mutating: false
+    behavioral_notes: "Universal baseline call.  Every SDK/CLI invocation makes this.  Near-zero detection risk."
+
+  - api_action: "sts:AssumeRole"
+    service: "sts"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Common in cross-account and service workflows.  Anomalous only if the source identity rarely assumes roles."
+
+  - api_action: "sts:GetSessionToken"
+    service: "sts"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Used by humans with MFA.  Unusual for service accounts."
+
+  - api_action: "sts:GetFederationToken"
+    service: "sts"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.25
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "Less common.  Anomalous in environments that don't use federation."
+
+  - api_action: "sts:AssumeRoleWithSAML"
+    service: "sts"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.20
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Normal for SSO/SAML environments.  Anomalous outside that context."
+
+  - api_action: "sts:AssumeRoleWithWebIdentity"
+    service: "sts"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.20
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Normal for OIDC-based workloads (EKS, GitHub Actions).  Anomalous otherwise."
+
+  # =========================================================================
+  # IAM — Identity and Access Management (READ)
+  # =========================================================================
+  - api_action: "iam:ListUsers"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Common audit/automation call.  Anomalous if called by non-admin identities at scale."
+
+  - api_action: "iam:ListRoles"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard enumeration.  Low risk."
+
+  - api_action: "iam:ListGroups"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard enumeration."
+
+  - api_action: "iam:GetUser"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Basic identity lookup."
+
+  - api_action: "iam:GetRole"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Includes trust policy — critical for attack graph building but low noise."
+
+  - api_action: "iam:GetPolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Policy metadata retrieval."
+
+  - api_action: "iam:GetPolicyVersion"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves actual policy document.  Essential for permission analysis."
+
+  - api_action: "iam:ListAttachedUserPolicies"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Policy enumeration per user."
+
+  - api_action: "iam:ListAttachedRolePolicies"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Policy enumeration per role."
+
+  - api_action: "iam:ListUserPolicies"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Inline policy enumeration."
+
+  - api_action: "iam:ListRolePolicies"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Inline policy enumeration."
+
+  - api_action: "iam:GetUserPolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves inline policy document."
+
+  - api_action: "iam:GetRolePolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves inline policy document."
+
+  - api_action: "iam:ListAccessKeys"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Enumerating access keys.  Slightly more sensitive than generic listing."
+
+  - api_action: "iam:ListMFADevices"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "MFA device enumeration."
+
+  - api_action: "iam:GetAccountAuthorizationDetails"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.20
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "Returns EVERYTHING — all users, roles, groups, policies.  Very efficient for recon but higher signal if monitored."
+
+  - api_action: "iam:SimulatePrincipalPolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Policy simulation — tests what an identity can do.  Low noise but unusual for non-security-team identities."
+
+  - api_action: "iam:ListAccountAliases"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.03
+    noise_level: "silent"
+    is_mutating: false
+    behavioral_notes: "Harmless metadata call."
+
+  # =========================================================================
+  # IAM — WRITE (privilege escalation vectors)
+  # =========================================================================
+  - api_action: "iam:CreateAccessKey"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types:
+      - "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS"
+    base_detection_score: 0.65
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Creates new credentials.  High-value indicator of compromise.  Often monitored by SIEM rules."
+
+  - api_action: "iam:CreateUser"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.70
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Creating IAM users is rare in production.  Very high signal."
+
+  - api_action: "iam:AttachUserPolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types:
+      - "Persistence:IAMUser/UserPermissions"
+    base_detection_score: 0.70
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Attaching policies to users — classic privesc vector.  Most SOCs have alerts on this."
+
+  - api_action: "iam:AttachRolePolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.65
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Slightly less suspicious than user policy attachment — roles change more often."
+
+  - api_action: "iam:PutUserPolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types:
+      - "Persistence:IAMUser/UserPermissions"
+    base_detection_score: 0.72
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Inline policy creation — harder to audit than managed policies.  Red flag."
+
+  - api_action: "iam:PutRolePolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.68
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Inline policy on role.  Common in IaC but suspicious ad-hoc."
+
+  - api_action: "iam:CreatePolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.55
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Creating managed policies is admin activity.  Moderate detection risk."
+
+  - api_action: "iam:CreateRole"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.60
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Creating roles is admin activity.  Unusual for non-IaC workflows."
+
+  - api_action: "iam:UpdateAssumeRolePolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.75
+    noise_level: "critical"
+    is_mutating: true
+    behavioral_notes: "Modifying trust policies — can backdoor persistent access.  Very high signal."
+
+  - api_action: "iam:PassRole"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.40
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "Not an API call itself but a permission check.  Enables privilege escalation via service-linked roles."
+
+  - api_action: "iam:CreateLoginProfile"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.70
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Enables console access for an IAM user.  Persistence indicator."
+
+  - api_action: "iam:DeleteAccessKey"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.35
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Cleanup action.  Used in rollback."
+
+  - api_action: "iam:DetachUserPolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.35
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Cleanup / rollback action."
+
+  - api_action: "iam:DetachRolePolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.35
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Cleanup / rollback action."
+
+  - api_action: "iam:DeleteUserPolicy"
+    service: "iam"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.35
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Cleanup / rollback action."
+
+  # =========================================================================
+  # S3 — Simple Storage Service
+  # =========================================================================
+  - api_action: "s3:ListBuckets"
+    service: "s3"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Universal S3 call.  Near-zero risk."
+
+  - api_action: "s3:GetBucketLocation"
+    service: "s3"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.04
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Bucket-level metadata.  Management event — logged by default."
+
+  - api_action: "s3:GetBucketPolicy"
+    service: "s3"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves bucket policy document."
+
+  - api_action: "s3:GetBucketAcl"
+    service: "s3"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "ACL check."
+
+  - api_action: "s3:GetObject"
+    service: "s3"
+    cloudtrail_visibility: "data_read"
+    is_read_only: true
+    guardduty_finding_types:
+      - "Discovery:S3/MaliciousIPCaller"
+      - "Exfiltration:S3/MaliciousIPCaller"
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Data event — only logged if data events are enabled for the bucket.  Low noise if data events are off."
+
+  - api_action: "s3:PutObject"
+    service: "s3"
+    cloudtrail_visibility: "data_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: true
+    behavioral_notes: "Data event — only logged if data events are enabled.  Routine write operation in normal workloads."
+
+  - api_action: "s3:DeleteObject"
+    service: "s3"
+    cloudtrail_visibility: "data_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.20
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Data event — deletion may be noticed if versioning is off.  More suspicious than PutObject."
+
+  - api_action: "s3:ListBucket"
+    service: "s3"
+    cloudtrail_visibility: "data_read"
+    is_read_only: true
+    guardduty_finding_types:
+      - "Discovery:S3/MaliciousIPCaller"
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Data event — listing bucket contents.  Very common in normal operations."
+
+  - api_action: "s3:PutBucketPolicy"
+    service: "s3"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types:
+      - "Policy:S3/BucketAnonymousAccessGranted"
+      - "Policy:S3/AccountBlockPublicAccessDisabled"
+    base_detection_score: 0.70
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Modifying bucket policies — resource-based privilege escalation vector.  Can trigger GuardDuty."
+
+  - api_action: "s3:GetBucketPublicAccessBlock"
+    service: "s3"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Public access block check."
+
+  # =========================================================================
+  # EC2 — Elastic Compute Cloud
+  # =========================================================================
+  - api_action: "ec2:DescribeInstances"
+    service: "ec2"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.04
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard baseline call.  Nearly every tool/automation calls this."
+
+  - api_action: "ec2:DescribeSecurityGroups"
+    service: "ec2"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.04
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard enumeration."
+
+  - api_action: "ec2:DescribeVpcs"
+    service: "ec2"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.04
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard enumeration."
+
+  - api_action: "ec2:DescribeSubnets"
+    service: "ec2"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.04
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard enumeration."
+
+  - api_action: "ec2:DescribeInstanceAttribute"
+    service: "ec2"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Can retrieve userData.  Slightly more targeted than DescribeInstances."
+
+  - api_action: "ec2:ModifyInstanceAttribute"
+    service: "ec2"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.55
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Can inject userData scripts — persistence/code execution vector."
+
+  # =========================================================================
+  # Lambda
+  # =========================================================================
+  - api_action: "lambda:ListFunctions"
+    service: "lambda"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard enumeration."
+
+  - api_action: "lambda:GetFunction"
+    service: "lambda"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves function config and code download URL."
+
+  - api_action: "lambda:GetPolicy"
+    service: "lambda"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Resource policy for the function."
+
+  - api_action: "lambda:InvokeFunction"
+    service: "lambda"
+    cloudtrail_visibility: "data_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Data event — Lambda function execution.  Only logged if data events enabled for Lambda."
+
+  - api_action: "lambda:UpdateFunctionCode"
+    service: "lambda"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.65
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Code injection vector.  Can steal credentials from execution role environment."
+
+  - api_action: "lambda:CreateFunction"
+    service: "lambda"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.55
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "With PassRole, can escalate to any role the function can assume."
+
+  - api_action: "lambda:UpdateFunctionConfiguration"
+    service: "lambda"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.50
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Can exfiltrate env vars including secrets."
+
+  # =========================================================================
+  # Organizations (for SCP discovery)
+  # =========================================================================
+  - api_action: "organizations:ListPolicies"
+    service: "organizations"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Requires management account or delegated admin.  Reveals SCP structure."
+
+  - api_action: "organizations:DescribePolicy"
+    service: "organizations"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves SCP document."
+
+  - api_action: "organizations:DescribeAccount"
+    service: "organizations"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Account metadata."
+
+  # =========================================================================
+  # CloudTrail (detection posture discovery)
+  # =========================================================================
+  - api_action: "cloudtrail:DescribeTrails"
+    service: "cloudtrail"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Reveals logging configuration.  Essential for adjusting detection scores."
+
+  - api_action: "cloudtrail:GetTrailStatus"
+    service: "cloudtrail"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Check if trail is actively logging."
+
+  - api_action: "cloudtrail:StopLogging"
+    service: "cloudtrail"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types:
+      - "Stealth:IAMUser/CloudTrailLoggingDisabled"
+    base_detection_score: 0.95
+    noise_level: "critical"
+    is_mutating: true
+    behavioral_notes: "INSTANT GuardDuty alert.  Only use as absolute last resort."
+
+  - api_action: "cloudtrail:DeleteTrail"
+    service: "cloudtrail"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types:
+      - "Stealth:IAMUser/CloudTrailLoggingDisabled"
+    base_detection_score: 0.98
+    noise_level: "critical"
+    is_mutating: true
+    behavioral_notes: "Maximum alert.  Never recommended."
+
+  # =========================================================================
+  # GuardDuty (detection posture discovery)
+  # =========================================================================
+  - api_action: "guardduty:ListDetectors"
+    service: "guardduty"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Check if GuardDuty is active."
+
+  - api_action: "guardduty:GetDetector"
+    service: "guardduty"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "GuardDuty configuration details."
+
+  # =========================================================================
+  # Access Analyzer
+  # =========================================================================
+  - api_action: "access-analyzer:ListAnalyzers"
+    service: "access-analyzer"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Check if IAM Access Analyzer is configured."
+
+  # =========================================================================
+  # Config (detection posture)
+  # =========================================================================
+  - api_action: "config:DescribeConfigurationRecorders"
+    service: "config"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Check if AWS Config is recording."
+
+  # =========================================================================
+  # SecurityHub
+  # =========================================================================
+  - api_action: "securityhub:GetEnabledStandards"
+    service: "securityhub"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Check SecurityHub posture."

@@ -1,5 +1,3 @@
-"""Reconnaissance: local repo and path scanning for secrets and misconfigs."""
+"""atlas.recon — Layer 1: Environment observation and modeling."""
 
-from atlas.recon.scanner import ReconScanner, ReconFinding
-
-__all__ = ["ReconScanner", "ReconFinding"]
+from atlas.recon.engine import EnvironmentModel, ReconEngine
