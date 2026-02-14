@@ -89,6 +89,21 @@ profiles:
     is_mutating: false
     behavioral_notes: "Normal for OIDC-based workloads (EKS, GitHub Actions).  Anomalous otherwise."
 
+  - api_action: "sts:GetAccessKeyInfo"
+    service: "sts"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: >
+      Resolves the AWS account ID associated with an access key.
+      CRITICAL: This API call is logged ONLY in the caller's account,
+      NOT in the target account.  This makes it effectively invisible
+      to the target.  The offline decoding alternative uses zero API
+      calls and is completely silent.
+
   # =========================================================================
   # IAM — Identity and Access Management (READ)
   # =========================================================================
@@ -161,6 +176,21 @@ profiles:
     noise_level: "low"
     is_mutating: false
     behavioral_notes: "Retrieves actual policy document.  Essential for permission analysis."
+
+  - api_action: "iam:GetAccountAuthorizationDetails"
+    service: "iam"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: >
+      Returns ALL users, roles, groups, and their full policy documents
+      in a single API call.  Extremely powerful for permission mapping.
+      Slightly more suspicious than individual List/Get calls because
+      it dumps the entire IAM configuration at once, which is unusual
+      for normal operations but common for audit/security tools.
 
   - api_action: "iam:ListAttachedUserPolicies"
     service: "iam"
@@ -599,6 +629,49 @@ profiles:
     is_mutating: true
     behavioral_notes: "Can inject userData scripts — persistence/code execution vector."
 
+  # ── EBS Snapshots ──────────────────────────────────────────────────────
+  - api_action: "ec2:DescribeSnapshots"
+    service: "ec2"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: >
+      Standard read-only EC2 call.  When used with --restorable-by-user-ids
+      all and --owner-ids, this discovers all PUBLIC EBS snapshots belonging
+      to a specific AWS account.  Logs ONLY in the caller's CloudTrail, NOT
+      in the victim's account.  Any AWS account can make this call.
+
+  - api_action: "ec2:CreateVolume"
+    service: "ec2"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.35
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: >
+      Creates an EBS volume, optionally from a snapshot.  When used with a
+      public snapshot's SnapshotId, this clones the snapshot into the
+      attacker's account.  The volume can then be attached and mounted for
+      full data access.  This call logs in the CALLER's account only.
+
+  - api_action: "ec2:ModifySnapshotAttribute"
+    service: "ec2"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.70
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: >
+      Modifies EBS snapshot sharing permissions.  When createVolumePermission
+      is set to {"add": {"items": [{"groups": "all"}]}}, this makes a snapshot
+      public.  Logs in the snapshot owner's CloudTrail.  This is the action
+      that creates the exposure — should be heavily monitored.
+
   # =========================================================================
   # Lambda
   # =========================================================================
@@ -811,3 +884,362 @@ profiles:
     noise_level: "low"
     is_mutating: false
     behavioral_notes: "Check SecurityHub posture."
+
+  # =========================================================================
+  # RDS — Relational Database Service
+  # =========================================================================
+  - api_action: "rds:DescribeDBInstances"
+    service: "rds"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard enumeration of RDS instances.  Common in monitoring and automation."
+
+  - api_action: "rds:DescribeDBSnapshots"
+    service: "rds"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Snapshot enumeration.  Useful for data exfiltration reconnaissance."
+
+  - api_action: "rds:ModifyDBSnapshotAttribute"
+    service: "rds"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.75
+    noise_level: "critical"
+    is_mutating: true
+    behavioral_notes: "Can share snapshots publicly or with external accounts — major data exfil vector."
+
+  - api_action: "rds:CopyDBSnapshot"
+    service: "rds"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.55
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Copying snapshots to attacker-controlled region or account."
+
+  - api_action: "rds:CreateDBSnapshot"
+    service: "rds"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.45
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Creating snapshots is common in backups but can be used for data staging."
+
+  # =========================================================================
+  # KMS — Key Management Service
+  # =========================================================================
+  - api_action: "kms:ListKeys"
+    service: "kms"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard key enumeration."
+
+  - api_action: "kms:ListAliases"
+    service: "kms"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.04
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Alias listing.  Harmless metadata."
+
+  - api_action: "kms:DescribeKey"
+    service: "kms"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Key metadata.  Common automation call."
+
+  - api_action: "kms:GetKeyPolicy"
+    service: "kms"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves key policy document.  Important for key policy abuse analysis."
+
+  - api_action: "kms:ListGrants"
+    service: "kms"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Grant enumeration.  Reveals delegated key access."
+
+  - api_action: "kms:GetKeyRotationStatus"
+    service: "kms"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Rotation status check."
+
+  - api_action: "kms:CreateGrant"
+    service: "kms"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.65
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Can grant decrypt access to external principals.  Privilege escalation vector."
+
+  - api_action: "kms:PutKeyPolicy"
+    service: "kms"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.80
+    noise_level: "critical"
+    is_mutating: true
+    behavioral_notes: "Modifying key policy — can backdoor persistent access to encrypted data.  Very high signal."
+
+  - api_action: "kms:Decrypt"
+    service: "kms"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Common in applications that use encrypted data.  Anomalous if called by unexpected identities."
+
+  # =========================================================================
+  # Secrets Manager
+  # =========================================================================
+  - api_action: "secretsmanager:ListSecrets"
+    service: "secretsmanager"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Secret enumeration.  Slightly more sensitive than generic listing — reveals secret names."
+
+  - api_action: "secretsmanager:GetResourcePolicy"
+    service: "secretsmanager"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Resource policy retrieval."
+
+  - api_action: "secretsmanager:GetSecretValue"
+    service: "secretsmanager"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types:
+      - "CredentialAccess:IAMUser/AnomalousBehavior"
+    base_detection_score: 0.40
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "Retrieves actual secret value.  Higher detection risk — anomalous if called by identities that don't normally access secrets."
+
+  - api_action: "secretsmanager:PutResourcePolicy"
+    service: "secretsmanager"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.65
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Can grant cross-account access to secrets.  Resource-based privilege escalation vector."
+
+  # =========================================================================
+  # SSM — Systems Manager Parameter Store
+  # =========================================================================
+  - api_action: "ssm:DescribeParameters"
+    service: "ssm"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Parameter enumeration.  Reveals parameter names and types (including SecureString)."
+
+  - api_action: "ssm:GetParameter"
+    service: "ssm"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves parameter value.  SecureString parameters require KMS decrypt — slightly higher signal."
+
+  - api_action: "ssm:GetParameters"
+    service: "ssm"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.18
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Batch parameter retrieval.  Efficient for credential harvesting."
+
+  - api_action: "ssm:GetParametersByPath"
+    service: "ssm"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.20
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "Recursive parameter enumeration by path.  Common in applications but can reveal entire secret trees."
+
+  - api_action: "ssm:SendCommand"
+    service: "ssm"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.60
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Remote command execution on EC2 instances via SSM agent.  Lateral movement vector."
+
+  # =========================================================================
+  # CloudFormation
+  # =========================================================================
+  - api_action: "cloudformation:DescribeStacks"
+    service: "cloudformation"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.05
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Standard stack enumeration.  Reveals stack roles and parameters."
+
+  - api_action: "cloudformation:GetTemplate"
+    service: "cloudformation"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Retrieves CloudFormation template — may contain hard-coded secrets or infra details."
+
+  - api_action: "cloudformation:CreateStack"
+    service: "cloudformation"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.60
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "With CAPABILITY_IAM and a stack role, can escalate privileges via CloudFormation."
+
+  - api_action: "cloudformation:UpdateStack"
+    service: "cloudformation"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.55
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Updating a stack with a privileged role — can create/modify IAM resources indirectly."
+
+  - api_action: "cloudformation:DeleteStack"
+    service: "cloudformation"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.50
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Destructive action.  May leave orphaned resources."
+
+  # =========================================================================
+  # AWS Backup — Living-off-the-Cloud Reconnaissance
+  # =========================================================================
+  - api_action: "backup:ListProtectedResources"
+    service: "backup"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Lists all backed-up resources in one call — reveals critical production assets, ARNs, and resource types without calling individual service APIs. Low noise but extremely high intelligence value."
+
+  - api_action: "backup:ListBackupPlans"
+    service: "backup"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Enumerates backup plans.  Plan names often leak environment boundaries (prod-backups, critical-data)."
+
+  - api_action: "backup:GetBackupPlan"
+    service: "backup"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Reveals backup schedules (cron), retention policies, vault names, and timing — operational intelligence for attack planning."
+
+  - api_action: "backup:ListBackupSelections"
+    service: "backup"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.08
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Lists selections within a backup plan.  Reveals IAM role used by Backup service."
+
+  - api_action: "backup:GetBackupSelection"
+    service: "backup"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.10
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Reveals exact resources targeted by backup — can discover resources not yet backed up that won't appear in ListProtectedResources.  Also exposes tagging strategies and selection conditions."
+
+  - api_action: "backup:ListBackupVaults"
+    service: "backup"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.06
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Lists backup vaults.  Vault names and encryption keys provide organizational context."

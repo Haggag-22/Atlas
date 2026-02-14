@@ -84,13 +84,33 @@ class ReconConfig(BaseModel):
             "guardrail",
             "logging_config",
             "resource",
+            "backup",
+            "permission_resolver",
         ],
     )
     resource_types: list[str] = Field(
-        default_factory=lambda: ["s3", "ec2", "lambda"],
+        default_factory=lambda: [
+            "s3", "ec2", "lambda", "rds", "kms",
+            "secretsmanager", "ssm", "cloudformation", "ebs",
+        ],
         description="Which resource types the resource collector should enumerate.",
     )
     max_items_per_collector: int = 500
+    known_permissions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Operator-provided permission hints (e.g. 'ec2:*', 's3:GetObject'). "
+            "Used when policy documents are unavailable. "
+            "Format: list of IAM action strings with optional wildcards."
+        ),
+    )
+    enable_sentinel_probes: bool = Field(
+        default=True,
+        description=(
+            "Enable sentinel API probing as a fallback when policy documents "
+            "are unavailable. Adds ~10-15 read-only API calls."
+        ),
+    )
 
 
 class PlannerConfig(BaseModel):

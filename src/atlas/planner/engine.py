@@ -72,7 +72,11 @@ class PlannerEngine:
         )
 
         # ── Step 2: Build attack graph ─────────────────────────────
-        builder = AttackGraphBuilder(env_model.graph, scorer)
+        builder = AttackGraphBuilder(
+            env_model.graph,
+            scorer,
+            permission_map=env_model.permission_map,
+        )
         attack_graph = builder.build()
 
         self._recorder.record(

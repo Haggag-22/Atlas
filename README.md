@@ -118,6 +118,23 @@ Detection costs and noise levels are derived from CloudTrail and GuardDuty profi
 
 ---
 
+## Discovered Resources
+
+The recon engine collects the following resource types (configurable via `recon.resource_types`):
+
+| Resource | Service | Key Security Data |
+|----------|---------|-------------------|
+| S3 Buckets | S3 | Bucket policies, Public Access Block |
+| EC2 Instances | EC2 | Instance profiles, IMDS config, security groups |
+| Lambda Functions | Lambda | Execution roles, resource policies, environment variables |
+| RDS Instances | RDS | Public accessibility, encryption, IAM auth, snapshots |
+| KMS Keys | KMS | Key policies, grants, rotation status |
+| Secrets Manager Secrets | Secrets Manager | Resource policies, rotation, KMS encryption |
+| SSM Parameters | SSM | Parameter types (SecureString), KMS key IDs |
+| CloudFormation Stacks | CloudFormation | Stack roles, capabilities, outputs |
+
+---
+
 ## License
 
 MIT

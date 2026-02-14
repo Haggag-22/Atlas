@@ -23,6 +23,7 @@ from atlas.core.types import EdgeType, NodeType
 from atlas.knowledge.api_profiles import get_detection_score
 from atlas.recon.base import BaseCollector
 from atlas.utils.aws import async_paginate, safe_api_call
+from atlas.utils.key_decoder import classify_key
 
 logger = structlog.get_logger(__name__)
 
@@ -237,10 +238,29 @@ class IdentityCollector(BaseCollector):
             self._graph.add_edge(
                 user.arn, group_arn, EdgeType.MEMBER_OF,
             )
-        # Access key → User credential edges
+        # Access key → User credential edges (with offline account ID decoding)
         for ak_id in user.access_key_ids:
             cred_arn = f"credential::{ak_id}"
-            self._graph.add_node(cred_arn, NodeType.CREDENTIAL, label=ak_id)
+            key_info = classify_key(ak_id)
+            self._graph.add_node(
+                cred_arn, NodeType.CREDENTIAL,
+                label=ak_id,
+                data={
+                    "access_key_id": ak_id,
+                    "prefix": key_info.prefix,
+                    "prefix_description": key_info.prefix_description,
+                    "decoded_account_id": key_info.account_id,
+                    "is_temporary": key_info.is_temporary,
+                    "is_long_lived": key_info.is_long_lived,
+                    "is_new_format": key_info.is_new_format,
+                    "owner_arn": user.arn,
+                    "owner_account_id": user.account_id,
+                    "is_cross_account": (
+                        key_info.account_id is not None
+                        and key_info.account_id != user.account_id
+                    ),
+                },
+            )
             self._graph.add_edge(cred_arn, user.arn, EdgeType.CREDENTIAL_FOR)
         # Permission boundary edge
         if user.permission_boundary_arn:

@@ -160,6 +160,167 @@ class LambdaFunction(BaseModel):
     discovered_at: str = Field(default_factory=_now_iso)
 
 
+class RDSInstance(BaseModel):
+    """Represents a discovered RDS database instance."""
+    model_config = {"frozen": True}
+
+    db_instance_identifier: str
+    arn: str
+    region: str
+    engine: str = ""                               # e.g. "mysql", "postgres", "aurora"
+    engine_version: str = ""
+    db_instance_class: str = ""
+    storage_encrypted: bool = False
+    publicly_accessible: bool = False
+    endpoint_address: str | None = None
+    endpoint_port: int | None = None
+    vpc_id: str | None = None
+    subnet_group_name: str | None = None
+    security_group_ids: list[str] = Field(default_factory=list)
+    iam_auth_enabled: bool = False
+    multi_az: bool = False
+    auto_minor_version_upgrade: bool = True
+    master_username: str = ""
+    kms_key_id: str | None = None
+    tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class KMSKey(BaseModel):
+    """Represents a discovered KMS key."""
+    model_config = {"frozen": True}
+
+    key_id: str
+    arn: str
+    region: str
+    description: str = ""
+    key_state: str = "Enabled"                     # Enabled | Disabled | PendingDeletion
+    key_manager: str = "CUSTOMER"                  # CUSTOMER | AWS
+    key_usage: str = "ENCRYPT_DECRYPT"
+    origin: str = "AWS_KMS"
+    key_policy: dict[str, Any] | None = None
+    grants: list[dict[str, Any]] = Field(default_factory=list)
+    rotation_enabled: bool = False
+    aliases: list[str] = Field(default_factory=list)
+    tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class SecretsManagerSecret(BaseModel):
+    """Represents a discovered Secrets Manager secret (value NOT stored)."""
+    model_config = {"frozen": True}
+
+    name: str
+    arn: str
+    region: str
+    description: str = ""
+    kms_key_id: str | None = None
+    rotation_enabled: bool = False
+    rotation_lambda_arn: str | None = None
+    last_accessed_date: str | None = None
+    last_rotated_date: str | None = None
+    resource_policy: dict[str, Any] | None = None
+    tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class SSMParameter(BaseModel):
+    """Represents a discovered SSM Parameter Store parameter (value NOT stored)."""
+    model_config = {"frozen": True}
+
+    name: str
+    arn: str
+    region: str
+    type: str = "String"                           # String | StringList | SecureString
+    description: str = ""
+    tier: str = "Standard"                         # Standard | Advanced | Intelligent-Tiering
+    version: int = 1
+    last_modified_date: str | None = None
+    kms_key_id: str | None = None                  # for SecureString
+    tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class CloudFormationStack(BaseModel):
+    """Represents a discovered CloudFormation stack."""
+    model_config = {"frozen": True}
+
+    stack_name: str
+    stack_id: str
+    arn: str
+    region: str
+    status: str = ""                               # e.g. "CREATE_COMPLETE"
+    role_arn: str | None = None                    # IAM role used for stack operations
+    template_description: str = ""
+    creation_time: str | None = None
+    last_updated_time: str | None = None
+    capabilities: list[str] = Field(default_factory=list)  # e.g. ["CAPABILITY_IAM"]
+    outputs: list[dict[str, str]] = Field(default_factory=list)
+    parameters: list[dict[str, str]] = Field(default_factory=list)
+    tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class EBSSnapshot(BaseModel):
+    """Represents a publicly exposed EBS snapshot discovered for the target account.
+
+    Public EBS snapshots are globally queryable via ec2:DescribeSnapshots
+    with ``--restorable-by-user-ids all --owner-ids <account_id>``.
+    Anyone with ANY AWS account can discover and clone these snapshots,
+    gaining full read access to the underlying filesystem data.
+    """
+    model_config = {"frozen": True}
+
+    snapshot_id: str
+    arn: str
+    region: str
+    owner_id: str                                  # Account ID that owns the snapshot
+    volume_id: str | None = None                   # Source EBS volume ID
+    volume_size_gb: int = 0                        # Size of the snapshot in GiB
+    description: str = ""                          # Snapshot description (often contains context)
+    encrypted: bool = False                        # Whether the snapshot is encrypted
+    kms_key_id: str | None = None                  # KMS key used for encryption
+    state: str = "completed"                       # pending | completed | error | recoverable
+    start_time: str | None = None                  # When the snapshot was created
+    is_public: bool = True                         # Always True for discovered public snapshots
+    tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class BackupPlan(BaseModel):
+    """Represents a discovered AWS Backup plan with schedule and resource targets."""
+    model_config = {"frozen": True}
+
+    plan_id: str
+    plan_name: str
+    arn: str
+    region: str
+    creation_date: str | None = None
+    rules: list[dict[str, Any]] = Field(default_factory=list)
+    # Resources targeted by this plan (ARNs discovered via selections)
+    protected_resource_arns: list[str] = Field(default_factory=list)
+    protected_resource_types: list[str] = Field(default_factory=list)
+    # Selection metadata (naming conventions, tag strategies)
+    selections: list[dict[str, Any]] = Field(default_factory=list)
+    # IAM role used by the backup service
+    backup_role_arn: str | None = None
+    tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class ProtectedResource(BaseModel):
+    """A resource discovered via AWS Backup (may not appear in direct service enumeration)."""
+    model_config = {"frozen": True}
+
+    resource_arn: str
+    resource_type: str                             # e.g. "RDS", "EC2", "EBS", "DynamoDB"
+    resource_name: str = ""
+    last_backup_time: str | None = None
+    last_backup_vault_arn: str | None = None
+    discovered_via_backup: bool = True             # flag: found through Backup, not direct enum
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Guardrail models
 # ═══════════════════════════════════════════════════════════════════════════

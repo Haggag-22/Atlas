@@ -28,6 +28,10 @@ _ACTION_NAMES: dict[str, str] = {
     "can_update_lambda": "Lambda Code Injection",
     "can_read_s3": "S3 Read Access",
     "can_write_s3": "S3 Write Access",
+    "can_read_userdata": "EC2 User Data Disclosure",
+    "can_enum_backup": "Backup Service Enumeration",
+    "can_decode_key": "Access Key Account Decode",
+    "can_loot_snapshot": "Public EBS Snapshot Loot",
     "assume_role": "Assume Role",
     "create_access_key": "Create Access Key",
     "attach_policy": "Attach Policy",
@@ -37,6 +41,10 @@ _ACTION_NAMES: dict[str, str] = {
     "update_lambda_code": "Update Lambda Code",
     "read_s3": "Read S3 Bucket",
     "write_s3": "Write S3 Bucket",
+    "read_userdata": "Read EC2 User Data",
+    "enum_backup": "Enumerate Backup Service",
+    "decode_key_account": "Decode Key Account ID",
+    "loot_public_snapshot": "Loot Public EBS Snapshot",
 }
 
 

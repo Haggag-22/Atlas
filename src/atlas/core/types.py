@@ -42,6 +42,8 @@ class NodeType(str, Enum):
     SECRETS_MANAGER = "secrets_manager"
     SSM_PARAMETER = "ssm_parameter"
     CLOUDFORMATION_STACK = "cloudformation_stack"
+    BACKUP_PLAN = "backup_plan"
+    EBS_SNAPSHOT = "ebs_snapshot"
     ACCOUNT = "account"
     CREDENTIAL = "credential"
 
@@ -65,6 +67,10 @@ class EdgeType(str, Enum):
     RESOURCE_POLICY_ALLOWS = "resource_policy_allows"  # resource -> identity (inverse)
     CAN_READ_S3 = "can_read_s3"            # identity -> s3 bucket (read access)
     CAN_WRITE_S3 = "can_write_s3"          # identity -> s3 bucket (write access)
+    CAN_READ_USERDATA = "can_read_userdata" # identity -> ec2 instance (user data disclosure)
+    CAN_ENUM_BACKUP = "can_enum_backup"    # identity -> account (backup service enumeration)
+    CAN_DECODE_KEY = "can_decode_key"      # identity -> credential (account ID from access key)
+    CAN_LOOT_SNAPSHOT = "can_loot_snapshot" # identity -> ebs_snapshot (public snapshot exfil)
 
     # Privilege escalation edges
     CAN_CREATE_KEY = "can_create_key"      # identity -> target_user

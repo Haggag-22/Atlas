@@ -4,13 +4,14 @@ atlas.cli.main
 Typer CLI entry point for Atlas.
 
 Commands:
-  atlas config     — Set/show AWS profile and default settings
-  atlas plan       — Run recon + planning, save to output/<case>/plan/
-  atlas simulate   — Simulate attack path from saved case (no AWS calls)
-  atlas run        — Execute attack path from saved case (uses AWS)
-  atlas cases      — List saved cases
-  atlas explain    — Explain an attack path from a saved case (no AWS calls)
-  atlas inspect    — Inspect detection profiles
+  atlas config      — Set/show AWS profile and default settings
+  atlas plan        — Run recon + planning, save to output/<case>/plan/
+  atlas simulate    — Simulate attack path from saved case (no AWS calls)
+  atlas run         — Execute attack path from saved case (uses AWS)
+  atlas cases       — List saved cases
+  atlas explain     — Explain an attack path from a saved case (no AWS calls)
+  atlas inspect     — Inspect detection profiles
+  atlas inspect-key — Decode AWS account ID from access key ID (offline)
 """
 
 from __future__ import annotations
@@ -949,6 +950,86 @@ def inspect(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# atlas inspect-key — offline access key ID decoder
+# ═══════════════════════════════════════════════════════════════════════════
+@app.command("inspect-key")
+def inspect_key(
+    access_key_id: str = typer.Argument(
+        ..., help="AWS access key ID to decode (e.g. ASIAY34FZKBOKMUTVV7A)"
+    ),
+) -> None:
+    """Decode AWS account ID from an access key ID (offline, no API calls).
+
+    This performs ZERO API calls — the account ID is extracted directly from
+    the key ID using base32 decoding and bit-shifting.  Works for keys
+    created after March 29, 2019.
+
+    \b
+    Research credit:
+      - Aidan Steele: AWS Access Key ID Formats
+      - Tal Be'ery: A short note on AWS KEY ID
+    """
+    from atlas.utils.key_decoder import classify_key
+
+    info = classify_key(access_key_id)
+
+    table = Table(title="Access Key Analysis")
+    table.add_column("Property", style="cyan", no_wrap=True)
+    table.add_column("Value", style="white")
+
+    table.add_row("Access Key ID", info.access_key_id)
+    table.add_row("Prefix", f"{info.prefix} ({info.prefix_description})")
+    table.add_row("Key Type",
+                  "[yellow]Temporary (STS)[/]" if info.is_temporary
+                  else "[green]Long-lived (IAM)[/]" if info.is_long_lived
+                  else "[dim]Other[/]")
+    table.add_row("Format", "[green]New (post-March 2019)[/]" if info.is_new_format
+                  else "[yellow]Old (pre-March 2019)[/]")
+
+    if info.account_id:
+        table.add_row(
+            "Account ID",
+            f"[bold green]{info.account_id}[/]",
+        )
+        table.add_row("Decode Method", f"[green]{info.decode_method}[/] (zero API calls)")
+    else:
+        table.add_row(
+            "Account ID",
+            "[yellow]Cannot decode offline (old-format key)[/]",
+        )
+        table.add_row(
+            "Suggestion",
+            "[dim]Use sts:GetAccessKeyInfo from YOUR account "
+            "(only logs in your account, not the target's)[/]",
+        )
+
+    console.print(f"\n")
+    console.print(table)
+
+    # Also show the security context
+    console.print(f"\n")
+    context = Panel(
+        "[bold]Security Context[/]\n\n"
+        "[cyan]Offline decode:[/] Account ID is encoded in the key ID itself.\n"
+        "  - No API calls generated\n"
+        "  - No CloudTrail events in ANY account\n"
+        "  - Completely silent reconnaissance\n\n"
+        "[cyan]API alternative (sts:GetAccessKeyInfo):[/]\n"
+        "  - Logged ONLY in the caller's account\n"
+        "  - NOT logged in the target's account\n"
+        "  - Safe for red team scope validation\n\n"
+        "[cyan]Key prefixes:[/]\n"
+        "  AKIA = Long-lived IAM user key\n"
+        "  ASIA = Temporary STS credentials\n"
+        "  AROA = IAM Role unique ID\n"
+        "  AIDA = IAM User unique ID",
+        title="Technique: Get Account ID from Access Key",
+        border_style="blue",
+    )
+    console.print(context)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Shared path map builder (used by simulate, run, explain)
 # ═══════════════════════════════════════════════════════════════════════════
 def _build_path_map(
@@ -1045,6 +1126,10 @@ _ACTION_NAMES: dict[str, str] = {
     "can_update_lambda": "Lambda Code Injection",
     "can_read_s3": "S3 Read Access",
     "can_write_s3": "S3 Write Access",
+    "can_read_userdata": "EC2 User Data Disclosure",
+    "can_enum_backup": "Backup Service Enumeration",
+    "can_decode_key": "Access Key Account Decode",
+    "can_loot_snapshot": "Public EBS Snapshot Loot",
     "assume_role": "Assume Role",
     "create_access_key": "Create Access Key",
     "attach_policy": "Attach Policy",
@@ -1053,6 +1138,10 @@ _ACTION_NAMES: dict[str, str] = {
     "modify_trust_policy": "Modify Trust Policy",
     "update_lambda_code": "Update Lambda Code",
     "read_s3": "Read S3 Bucket",
+    "read_userdata": "Read EC2 User Data",
+    "enum_backup": "Enumerate Backup Service",
+    "decode_key_account": "Decode Key Account ID",
+    "loot_public_snapshot": "Loot Public EBS Snapshot",
     "write_s3": "Write S3 Bucket",
 }
 
@@ -1502,6 +1591,10 @@ _EDGE_TO_ACTION: dict[str, str] = {
     "can_update_lambda": "update_lambda_code",
     "can_read_s3": "read_s3",
     "can_write_s3": "write_s3",
+    "can_read_userdata": "read_userdata",
+    "can_enum_backup": "enum_backup",
+    "can_decode_key": "decode_key_account",
+    "can_loot_snapshot": "loot_public_snapshot",
 }
 
 

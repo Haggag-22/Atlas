@@ -6,13 +6,28 @@ from atlas.core.models import (
     ActionResult,
     AttackEdge,
     AttackPlan,
+    BackupPlan,
+    CloudFormationStack,
     DetectionProfile,
+    EBSSnapshot,
     EnvironmentMetadata,
     GuardrailState,
     IAMRole,
     IAMUser,
+    KMSKey,
     LoggingState,
     PlannedAction,
+    ProtectedResource,
+    RDSInstance,
+    SecretsManagerSecret,
+    SSMParameter,
+)
+from atlas.core.permission_map import (
+    PermissionConfidence,
+    PermissionEntry,
+    PermissionMap,
+    PermissionSource,
+    PolicyStatement,
 )
 from atlas.core.safety import SafetyGate
 from atlas.core.telemetry import TelemetryRecorder

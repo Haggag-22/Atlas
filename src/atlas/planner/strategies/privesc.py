@@ -206,6 +206,10 @@ class PrivilegeEscalationStrategy(BaseStrategy):
             "can_modify_trust": "modify_trust_policy",
             "can_update_lambda": "update_lambda_code",
             "can_create_lambda": "create_lambda",
+            "can_read_userdata": "read_userdata",
+            "can_enum_backup": "enum_backup",
+            "can_decode_key": "decode_key_account",
+            "can_loot_snapshot": "loot_public_snapshot",
         }
         return mapping.get(edge_type, edge_type)
 
