@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.guardrail
+atlas.recon.auth.guardrail
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Discovers guardrails: SCPs, permission boundaries, conditional policies.
 

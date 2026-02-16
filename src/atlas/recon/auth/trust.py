@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.trust
+atlas.recon.auth.trust
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Analyses role trust policies to build CAN_ASSUME / TRUSTS edges.
 

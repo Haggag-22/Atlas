@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.policy
+atlas.recon.auth.policy
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Discovers IAM policies (managed + inline) and their documents.
 

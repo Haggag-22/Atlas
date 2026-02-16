@@ -1,6 +1,6 @@
 """
-atlas.recon.collectors.permission_resolver
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+atlas.recon.permissions.resolver
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Permission Mapping & Attack Surface Analysis.
 
 This collector is the LAST recon collector to run.  It consumes data
@@ -1307,6 +1307,32 @@ class PermissionResolverCollector(BaseCollector):
         "backup:ListBackupPlans",
     ]
 
+    # Resource ARNs to test in Tier 3 SimulatePrincipalPolicy.
+    # Maps actions that are resource-scoped to ARN patterns.
+    _SIMULATE_RESOURCE_ARNS: dict[str, list[str]] = {
+        "s3:GetObject": ["arn:aws:s3:::*/*"],
+        "s3:PutObject": ["arn:aws:s3:::*/*"],
+        "s3:DeleteObject": ["arn:aws:s3:::*/*"],
+        "s3:ListBucket": ["arn:aws:s3:::*"],
+        "s3:GetBucketPolicy": ["arn:aws:s3:::*"],
+        "s3:PutBucketPolicy": ["arn:aws:s3:::*"],
+        "lambda:InvokeFunction": [
+            f"arn:aws:lambda:*:*:function:*",
+        ],
+        "lambda:UpdateFunctionCode": [
+            f"arn:aws:lambda:*:*:function:*",
+        ],
+        "secretsmanager:GetSecretValue": [
+            "arn:aws:secretsmanager:*:*:secret:*",
+        ],
+        "kms:Decrypt": ["arn:aws:kms:*:*:key/*"],
+        "kms:Encrypt": ["arn:aws:kms:*:*:key/*"],
+        "ssm:GetParameter": ["arn:aws:ssm:*:*:parameter/*"],
+        "ssm:PutParameter": ["arn:aws:ssm:*:*:parameter/*"],
+        "dynamodb:GetItem": ["arn:aws:dynamodb:*:*:table/*"],
+        "dynamodb:PutItem": ["arn:aws:dynamodb:*:*:table/*"],
+    }
+
     async def _resolve_from_simulate_policy(
         self,
         pmap: PermissionMap,
@@ -1317,9 +1343,9 @@ class PermissionResolverCollector(BaseCollector):
         """Tier 3: Use iam:SimulatePrincipalPolicy to test permissions.
 
         Sends batches of actions to the IAM policy simulator and records
-        each result as CONFIRMED allow/deny.  This is extremely accurate
-        because AWS evaluates the full policy chain (identity + SCP +
-        boundary + resource policy).
+        each result as CONFIRMED allow/deny.  For resource-scoped actions,
+        we additionally pass ResourceArns so the simulator evaluates
+        resource-based policies correctly.
 
         Returns dict with: success, tested, allowed, denied.
         """
@@ -1333,16 +1359,47 @@ class PermissionResolverCollector(BaseCollector):
         if not caller_arn:
             return results
 
-        # SimulatePrincipalPolicy accepts up to 50 actions per call.
         BATCH_SIZE = 50
-        actions = list(self._SIMULATE_ACTIONS)
-
         profile = pmap.get_or_create_profile(caller_arn)
+
+        # Split actions: wildcard-resource (can batch) vs resource-scoped
+        wildcard_actions: list[str] = []
+        resource_scoped: list[tuple[str, list[str]]] = []
+        for action in self._SIMULATE_ACTIONS:
+            if action in self._SIMULATE_RESOURCE_ARNS:
+                resource_scoped.append(
+                    (action, self._SIMULATE_RESOURCE_ARNS[action]),
+                )
+            else:
+                wildcard_actions.append(action)
+
+        def _record_eval(action: str, decision: str) -> None:
+            """Record a single SimulatePrincipalPolicy evaluation."""
+            results["tested"] += 1
+            if decision == "allowed":
+                results["allowed"] += 1
+                profile.add_permission(PermissionEntry(
+                    action=action,
+                    allowed=True,
+                    confidence=PermissionConfidence.CONFIRMED,
+                    source=PermissionSource.SIMULATE_PRINCIPAL,
+                    notes=f"SimulatePrincipalPolicy: {decision}",
+                ))
+            elif decision in ("explicitDeny", "implicitDeny"):
+                results["denied"] += 1
+                profile.add_permission(PermissionEntry(
+                    action=action,
+                    allowed=False,
+                    confidence=PermissionConfidence.CONFIRMED,
+                    source=PermissionSource.DENY_CONFIRMED,
+                    notes=f"SimulatePrincipalPolicy: {decision}",
+                ))
 
         try:
             async with self._session.client("iam") as iam:
-                for i in range(0, len(actions), BATCH_SIZE):
-                    batch = actions[i : i + BATCH_SIZE]
+                # Phase A: batch wildcard-resource actions
+                for i in range(0, len(wildcard_actions), BATCH_SIZE):
+                    batch = wildcard_actions[i : i + BATCH_SIZE]
                     try:
                         resp = await iam.simulate_principal_policy(
                             PolicySourceArn=caller_arn,
@@ -1356,37 +1413,16 @@ class PermissionResolverCollector(BaseCollector):
                         ):
                             logger.info("simulate_principal_denied", error=code)
                             return results
-                        # NoSuchEntity — the ARN might need normalization
                         if code == "NoSuchEntity":
                             logger.info("simulate_principal_nosuchentity", arn=caller_arn)
                             return results
                         raise
 
                     for eval_result in resp.get("EvaluationResults", []):
-                        action = eval_result.get("EvalActionName", "")
-                        decision = eval_result.get("EvalDecision", "")
-                        results["tested"] += 1
-
-                        if decision == "allowed":
-                            results["allowed"] += 1
-                            profile.add_permission(PermissionEntry(
-                                action=action,
-                                allowed=True,
-                                confidence=PermissionConfidence.CONFIRMED,
-                                source=PermissionSource.SIMULATE_PRINCIPAL,
-                                notes=f"SimulatePrincipalPolicy: {decision}",
-                            ))
-                        elif decision in (
-                            "explicitDeny", "implicitDeny",
-                        ):
-                            results["denied"] += 1
-                            profile.add_permission(PermissionEntry(
-                                action=action,
-                                allowed=False,
-                                confidence=PermissionConfidence.CONFIRMED,
-                                source=PermissionSource.DENY_CONFIRMED,
-                                notes=f"SimulatePrincipalPolicy: {decision}",
-                            ))
+                        _record_eval(
+                            eval_result.get("EvalActionName", ""),
+                            eval_result.get("EvalDecision", ""),
+                        )
 
                     self._record(
                         "iam:SimulatePrincipalPolicy",
@@ -1394,6 +1430,42 @@ class PermissionResolverCollector(BaseCollector):
                             "iam:SimulatePrincipalPolicy"
                         ),
                         details={"batch_size": len(batch), "offset": i},
+                    )
+
+                # Phase B: resource-scoped actions (one per call)
+                for action, resource_arns in resource_scoped:
+                    try:
+                        resp = await iam.simulate_principal_policy(
+                            PolicySourceArn=caller_arn,
+                            ActionNames=[action],
+                            ResourceArns=resource_arns,
+                        )
+                    except ClientError as exc:
+                        code = exc.response.get("Error", {}).get("Code", "")
+                        if code in (
+                            "AccessDenied", "AccessDeniedException",
+                            "UnauthorizedAccess",
+                        ):
+                            continue
+                        if code == "NoSuchEntity":
+                            continue
+                        raise
+
+                    for eval_result in resp.get("EvaluationResults", []):
+                        _record_eval(
+                            eval_result.get("EvalActionName", ""),
+                            eval_result.get("EvalDecision", ""),
+                        )
+
+                    self._record(
+                        "iam:SimulatePrincipalPolicy",
+                        detection_cost=get_detection_score(
+                            "iam:SimulatePrincipalPolicy"
+                        ),
+                        details={
+                            "action": action,
+                            "resource_arns": resource_arns,
+                        },
                     )
 
             results["success"] = True
@@ -1796,6 +1868,11 @@ class PermissionResolverCollector(BaseCollector):
     # Tier 6: IAM permission brute-force
     # ==================================================================
 
+    _THROTTLE_CODES: frozenset[str] = frozenset({
+        "Throttling", "ThrottlingException",
+        "RequestLimitExceeded", "TooManyRequestsException",
+    })
+
     async def _run_sentinel_probes(
         self,
         pmap: PermissionMap,
@@ -1804,19 +1881,20 @@ class PermissionResolverCollector(BaseCollector):
     ) -> dict[str, int]:
         """Brute-force IAM permissions by trying every read-only API.
 
-        Like enumerate-iam: tries ~100+ API calls and records which
-        succeed (CONFIRMED allow) vs get AccessDenied (CONFIRMED deny).
-        Results applied to the CALLER identity.
+        Improvements over naive enumerate-iam:
+          - Probes batched by service (one client per service, not per probe)
+          - Exponential backoff retry on throttled probes (up to 2 retries)
+          - Resource-scoped follow-up probes for discovered S3 buckets
         """
-        from atlas.recon.collectors.bruteforce_perms import build_merged_probes
+        from atlas.recon.permissions.bruteforce import build_merged_probes
         BRUTEFORCE_PROBES = build_merged_probes()
         import asyncio as _asyncio
 
-        results = {"total": 0, "succeeded": 0, "denied": 0, "errors": 0}
-        _bf_total_probes = len(BRUTEFORCE_PROBES) + 1  # +1 for s3:ListBuckets
+        results = {"total": 0, "succeeded": 0, "denied": 0, "errors": 0,
+                   "throttle_retries": 0}
+        _bf_total_probes = len(BRUTEFORCE_PROBES) + 1
         _bf_cb = getattr(self, "_bf_progress_cb", None)
 
-        # Use the resolved caller ARN
         caller_arn = pmap.caller_arn
         if not caller_arn:
             caller_identities = (
@@ -1830,18 +1908,19 @@ class PermissionResolverCollector(BaseCollector):
         profile = pmap.get_or_create_profile(caller_arn)
         profile.resolution_tier = "bruteforce"
 
-        # Resolve caller username for IAM self-probes
         caller_username = caller_arn.split("/")[-1] if "/" in caller_arn else ""
 
-        # Phase 1: run s3:ListBuckets first to get a bucket name for S3 probes
+        # Phase 1a: s3:ListBuckets — get bucket names for S3 sub-probes
+        discovered_buckets: list[str] = []
         first_bucket: str = ""
         first_trail: str = ""
         try:
             async with self._session.client("s3", region_name=region) as s3:
                 resp = await s3.list_buckets()
                 buckets = resp.get("Buckets", [])
-                if buckets:
-                    first_bucket = buckets[0]["Name"]
+                discovered_buckets = [b["Name"] for b in buckets]
+                if discovered_buckets:
+                    first_bucket = discovered_buckets[0]
                 profile.add_permission(PermissionEntry(
                     action="s3:ListBuckets",
                     allowed=True,
@@ -1870,10 +1949,10 @@ class PermissionResolverCollector(BaseCollector):
                 "last_allowed": "s3:ListBuckets" if results["succeeded"] > 0 else None,
             })
 
-        # Phase 1b: get first trail name for cloudtrail probes
+        # Phase 1b: cloudtrail:DescribeTrails — get trail name
         try:
             async with self._session.client(
-                "cloudtrail", region_name=region
+                "cloudtrail", region_name=region,
             ) as ct:
                 resp = await ct.describe_trails()
                 trails = resp.get("trailList", [])
@@ -1882,18 +1961,58 @@ class PermissionResolverCollector(BaseCollector):
         except Exception:
             pass
 
-        # Phase 2: run all other probes
+        # ── Error classification helper ───────────────────────────────
+        def _classify_error(
+            error_code: str, http_status: int,
+        ) -> tuple[str, bool]:
+            """Classify a ClientError → (category, is_allowed)."""
+            if error_code in _DENY_ERROR_CODES:
+                return ("deny", False)
+            if error_code in _RESOURCE_NOT_FOUND_CODES:
+                return ("allowed_resource_missing", True)
+            if error_code in self._THROTTLE_CODES:
+                return ("throttle", False)
+            if error_code in _AMBIGUOUS_ERROR_CODES:
+                return ("ambiguous", False)
+            if http_status == 403:
+                return ("deny", False)
+            if http_status in (400, 404, 409) and error_code in _PARAM_ERROR_CODES:
+                return ("allowed_post_auth", True)
+            return ("unknown", False)
+
+        # ── Retry wrapper for throttled calls ─────────────────────────
+        async def _call_with_retry(
+            client: Any, method: str, kwargs: dict[str, Any],
+            max_retries: int = 2,
+        ) -> Any:
+            for attempt in range(max_retries + 1):
+                try:
+                    api_method = getattr(client, method)
+                    return await api_method(**kwargs)
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code", "")
+                    if code in self._THROTTLE_CODES and attempt < max_retries:
+                        wait = (2 ** attempt) + (0.5 * attempt)
+                        results["throttle_retries"] += 1
+                        logger.debug(
+                            "bf_throttle_retry",
+                            method=method, attempt=attempt + 1, wait=wait,
+                        )
+                        await _asyncio.sleep(wait)
+                        continue
+                    raise
+
+        # Phase 2: run probes batched by service
         sem = _asyncio.Semaphore(self._config.recon.bruteforce_concurrency)
 
         async def _probe_one(
-            client_name: str, method: str,
+            client: Any, client_name: str, method: str,
             kwargs: dict[str, Any], action: str,
         ) -> None:
-            # Skip probes we already ran
+            """Execute a single probe using a shared service client."""
             if action == "s3:ListBuckets":
                 return
 
-            # Substitute dynamic placeholders
             resolved_kwargs = dict(kwargs)
             needs_bucket = any(
                 v == "__FIRST_BUCKET__" for v in resolved_kwargs.values()
@@ -1906,7 +2025,7 @@ class PermissionResolverCollector(BaseCollector):
             )
 
             if needs_bucket and not first_bucket:
-                return  # Can't test without a bucket
+                return
             if needs_trail and not first_trail:
                 return
             if needs_caller and not caller_username:
@@ -1923,13 +2042,8 @@ class PermissionResolverCollector(BaseCollector):
             async with sem:
                 _this_allowed: str | None = None
                 try:
-                    async with self._session.client(
-                        client_name, region_name=region
-                    ) as client:
-                        api_method = getattr(client, method)
-                        await api_method(**resolved_kwargs)
+                    await _call_with_retry(client, method, resolved_kwargs)
 
-                    # Success — the API returned a real response
                     results["succeeded"] += 1
                     _this_allowed = action
                     profile.add_permission(PermissionEntry(
@@ -1943,14 +2057,27 @@ class PermissionResolverCollector(BaseCollector):
 
                 except ClientError as exc:
                     error_code = exc.response.get(
-                        "Error", {}
+                        "Error", {},
                     ).get("Code", "")
                     http_status = exc.response.get(
                         "ResponseMetadata", {},
                     ).get("HTTPStatusCode", 0)
 
-                    if error_code in _DENY_ERROR_CODES:
-                        # Definite IAM denial
+                    category, is_allowed = _classify_error(
+                        error_code, http_status,
+                    )
+
+                    if is_allowed:
+                        results["succeeded"] += 1
+                        _this_allowed = action
+                        profile.add_permission(PermissionEntry(
+                            action=action,
+                            allowed=True,
+                            confidence=PermissionConfidence.CONFIRMED,
+                            source=PermissionSource.SENTINEL_PROBE,
+                            notes=f"Brute-force: {error_code} ({category})",
+                        ))
+                    elif category == "deny":
                         results["denied"] += 1
                         profile.add_permission(PermissionEntry(
                             action=action,
@@ -1959,87 +2086,14 @@ class PermissionResolverCollector(BaseCollector):
                             source=PermissionSource.DENY_CONFIRMED,
                             notes=f"Brute-force: {error_code}",
                         ))
-                        logger.debug(
-                            "bf_probe_denied",
-                            action=action, error_code=error_code,
-                        )
-                    elif error_code in _RESOURCE_NOT_FOUND_CODES:
-                        # "Resource not found" means we HAVE the permission
-                        # but the resource doesn't exist (e.g. NoSuchBucket)
-                        results["succeeded"] += 1
-                        _this_allowed = action
-                        profile.add_permission(PermissionEntry(
-                            action=action,
-                            allowed=True,
-                            confidence=PermissionConfidence.CONFIRMED,
-                            source=PermissionSource.SENTINEL_PROBE,
-                            notes=f"Brute-force: {error_code} (resource not found = permitted)",
-                        ))
-                        logger.debug(
-                            "bf_probe_resource_not_found",
-                            action=action, error_code=error_code,
-                        )
-                    elif error_code in _AMBIGUOUS_ERROR_CODES:
-                        # These errors don't prove IAM access — they're
-                        # service-level issues (subscription, org setup, etc.)
-                        results["errors"] += 1
-                        logger.debug(
-                            "bf_probe_ambiguous",
-                            action=action, error_code=error_code,
-                        )
-                    elif http_status == 403:
-                        # HTTP 403 with non-standard error code — still denial
-                        results["denied"] += 1
-                        profile.add_permission(PermissionEntry(
-                            action=action,
-                            allowed=False,
-                            confidence=PermissionConfidence.CONFIRMED,
-                            source=PermissionSource.DENY_CONFIRMED,
-                            notes=f"Brute-force: HTTP 403 ({error_code})",
-                        ))
-                        logger.debug(
-                            "bf_probe_403",
-                            action=action, error_code=error_code,
-                        )
-                    elif http_status in (400, 404, 409):
-                        # Client errors that indicate the API was reachable
-                        # and we passed auth, but params were wrong.
-                        # Only count as CONFIRMED if the error clearly
-                        # indicates "past the auth gate".
-                        if error_code in _PARAM_ERROR_CODES:
-                            # Param validation happens AFTER auth in most
-                            # services — this is a strong signal of access.
-                            results["succeeded"] += 1
-                            _this_allowed = action
-                            profile.add_permission(PermissionEntry(
-                                action=action,
-                                allowed=True,
-                                confidence=PermissionConfidence.CONFIRMED,
-                                source=PermissionSource.SENTINEL_PROBE,
-                                notes=f"Brute-force: {error_code} (post-auth error)",
-                            ))
-                            logger.debug(
-                                "bf_probe_param_err",
-                                action=action, error_code=error_code,
-                            )
-                        else:
-                            # Unknown 4xx — inconclusive
-                            results["errors"] += 1
-                            logger.debug(
-                                "bf_probe_unknown_4xx",
-                                action=action,
-                                error_code=error_code,
-                                http=http_status,
-                            )
                     else:
-                        # Other errors — inconclusive, don't claim access
                         results["errors"] += 1
-                        logger.debug(
-                            "bf_probe_other",
-                            action=action,
-                            error_code=error_code,
-                            http=http_status,
-                        )
+
+                    logger.debug(
+                        "bf_probe_result",
+                        action=action, category=category,
+                        error_code=error_code, http=http_status,
+                    )
 
                 except Exception as exc:
                     results["errors"] += 1
@@ -2061,12 +2115,44 @@ class PermissionResolverCollector(BaseCollector):
                         },
                     )
 
-        # Fire all probes concurrently (capped by semaphore)
-        tasks = [
-            _probe_one(client_name, method, kwargs, action)
-            for client_name, method, kwargs, action in BRUTEFORCE_PROBES
-        ]
-        await _asyncio.gather(*tasks)
+        # Group probes by service for client batching
+        service_probes: dict[str, list[tuple[str, dict[str, Any], str]]] = {}
+        for client_name, method, kwargs, action in BRUTEFORCE_PROBES:
+            if action == "s3:ListBuckets":
+                continue
+            service_probes.setdefault(client_name, []).append(
+                (method, kwargs, action),
+            )
+
+        async def _run_service_batch(
+            client_name: str,
+            probes: list[tuple[str, dict[str, Any], str]],
+        ) -> None:
+            """Create one client per service and run all its probes."""
+            try:
+                async with self._session.client(
+                    client_name, region_name=region,
+                ) as client:
+                    tasks = [
+                        _probe_one(client, client_name, m, kw, act)
+                        for m, kw, act in probes
+                    ]
+                    await _asyncio.gather(*tasks)
+            except Exception as exc:
+                for _m, _kw, _act in probes:
+                    results["errors"] += 1
+                    results["total"] += 1
+                logger.debug(
+                    "bf_service_client_failed",
+                    service=client_name,
+                    probe_count=len(probes),
+                    error=str(exc),
+                )
+
+        await _asyncio.gather(*[
+            _run_service_batch(svc, probes)
+            for svc, probes in service_probes.items()
+        ])
 
         logger.info(
             "bruteforce_probes_complete",
@@ -2074,23 +2160,116 @@ class PermissionResolverCollector(BaseCollector):
             succeeded=results["succeeded"],
             denied=results["denied"],
             errors=results["errors"],
+            throttle_retries=results["throttle_retries"],
         )
 
         # ── Infer write permissions from confirmed read clusters ──────
-        # When the brute-force confirms a critical mass of read actions
-        # for a service, it strongly suggests broad access (e.g. s3:*).
-        # Add write permissions with INFERRED confidence so the attack
-        # graph can build write edges.
         self._infer_write_from_read_cluster(profile, results)
 
+        # ── Resource-scoped follow-up probes ──────────────────────────
+        await self._probe_resource_scoped(
+            profile, region, discovered_buckets=discovered_buckets,
+        )
+
         return results
+
+    # ==================================================================
+    # Resource-scoped permission probing
+    # ==================================================================
+    async def _probe_resource_scoped(
+        self,
+        profile: IdentityPermissionProfile,
+        region: str,
+        discovered_buckets: list[str] | None = None,
+    ) -> None:
+        """Test permissions against specific discovered resources.
+
+        After brute-force confirms general S3 access, this tests each
+        discovered bucket for read/write to build a per-resource
+        permission matrix for the attack graph.
+        """
+        if not discovered_buckets:
+            discovered_buckets = []
+
+        # Also add buckets discovered by earlier collectors
+        for bucket_arn in self._graph.nodes_of_type(NodeType.S3_BUCKET):
+            bucket_name = bucket_arn.split(":::")[-1] if ":::" in bucket_arn else ""
+            if bucket_name and bucket_name not in discovered_buckets:
+                discovered_buckets.append(bucket_name)
+
+        if not discovered_buckets:
+            return
+
+        has_any_s3 = any(
+            e.allowed and e.confidence == PermissionConfidence.CONFIRMED
+            for a, e in profile.permissions.items()
+            if a.startswith("s3:")
+        )
+        if not has_any_s3:
+            return
+
+        probed = 0
+        for bucket_name in discovered_buckets[:10]:
+            bucket_arn = f"arn:aws:s3:::{bucket_name}"
+            try:
+                async with self._session.client("s3", region_name=region) as s3:
+                    # ListObjectsV2 → s3:ListBucket on this bucket
+                    try:
+                        await s3.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+                        profile.add_permission(PermissionEntry(
+                            action="s3:ListBucket",
+                            allowed=True,
+                            confidence=PermissionConfidence.CONFIRMED,
+                            source=PermissionSource.SENTINEL_PROBE,
+                            resource_arn=bucket_arn,
+                            resource_arns=[bucket_arn, f"{bucket_arn}/*"],
+                            notes=f"Resource probe: ListObjectsV2 on {bucket_name}",
+                        ))
+                    except ClientError:
+                        pass
+
+                    # HeadObject with fake key → 404 proves s3:GetObject
+                    try:
+                        await s3.head_object(
+                            Bucket=bucket_name,
+                            Key="__atlas_probe_nonexistent__",
+                        )
+                    except ClientError as exc:
+                        code = exc.response.get("Error", {}).get("Code", "")
+                        if code in ("404", "NoSuchKey"):
+                            profile.add_permission(PermissionEntry(
+                                action="s3:GetObject",
+                                allowed=True,
+                                confidence=PermissionConfidence.CONFIRMED,
+                                source=PermissionSource.SENTINEL_PROBE,
+                                resource_arn=f"{bucket_arn}/*",
+                                resource_arns=[f"{bucket_arn}/*"],
+                                notes=f"Resource probe: HeadObject 404 on {bucket_name}",
+                            ))
+                        elif code in _DENY_ERROR_CODES:
+                            profile.add_permission(PermissionEntry(
+                                action="s3:GetObject",
+                                allowed=False,
+                                confidence=PermissionConfidence.CONFIRMED,
+                                source=PermissionSource.DENY_CONFIRMED,
+                                resource_arn=f"{bucket_arn}/*",
+                                resource_arns=[f"{bucket_arn}/*"],
+                                notes=f"Resource probe: GetObject denied on {bucket_name}",
+                            ))
+
+                    probed += 1
+            except Exception:
+                pass
+
+        if probed:
+            logger.info("resource_scoped_probes_complete", buckets_probed=probed)
 
     # ==================================================================
     # Write inference from confirmed read clusters
     # ==================================================================
     _WRITE_INFERENCE_RULES: list[tuple[list[str], int, list[str]]] = [
         # (confirmed_read_actions, min_threshold, inferred_write_actions)
-        # S3: if 4+ read probes succeed, infer write access
+        # S3: 4+ read probes → infer write access
         (
             [
                 "s3:ListBuckets", "s3:GetBucketPolicy", "s3:GetBucketAcl",
@@ -2103,7 +2282,7 @@ class PermissionResolverCollector(BaseCollector):
                 "s3:GetObject",
             ],
         ),
-        # EC2: if 5+ describe calls succeed, infer modify access
+        # EC2: 5+ describe → infer modify
         (
             [
                 "ec2:DescribeInstances", "ec2:DescribeSecurityGroups",
@@ -2116,9 +2295,10 @@ class PermissionResolverCollector(BaseCollector):
             [
                 "ec2:RunInstances", "ec2:StartInstances",
                 "ec2:ModifyInstanceAttribute",
+                "ec2:CreateSnapshot", "ec2:ModifySnapshotAttribute",
             ],
         ),
-        # IAM: if 5+ IAM read calls succeed, infer write access
+        # IAM: 5+ read → infer write
         (
             [
                 "iam:ListUsers", "iam:ListRoles", "iam:ListGroups",
@@ -2134,7 +2314,7 @@ class PermissionResolverCollector(BaseCollector):
                 "iam:UpdateAssumeRolePolicy",
             ],
         ),
-        # Lambda: if both list calls succeed, infer invoke/update
+        # Lambda: 2+ list → infer invoke/update
         (
             [
                 "lambda:ListFunctions", "lambda:ListLayers",
@@ -2145,6 +2325,75 @@ class PermissionResolverCollector(BaseCollector):
                 "lambda:InvokeFunction", "lambda:UpdateFunctionCode",
                 "lambda:CreateFunction",
             ],
+        ),
+        # Secrets Manager: 1+ read → infer read secret values
+        (
+            ["secretsmanager:ListSecrets"],
+            1,
+            [
+                "secretsmanager:GetSecretValue",
+                "secretsmanager:DescribeSecret",
+            ],
+        ),
+        # KMS: 2+ read → infer key usage
+        (
+            ["kms:ListKeys", "kms:ListAliases"],
+            2,
+            ["kms:DescribeKey", "kms:Decrypt", "kms:Encrypt"],
+        ),
+        # SSM: 1+ read → infer parameter access
+        (
+            ["ssm:DescribeParameters", "ssm:DescribeInstanceInformation"],
+            1,
+            ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"],
+        ),
+        # RDS: 2+ read → infer snapshot ops
+        (
+            [
+                "rds:DescribeDBInstances", "rds:DescribeDBClusters",
+                "rds:DescribeDBSnapshots",
+            ],
+            2,
+            [
+                "rds:CreateDBSnapshot", "rds:ModifyDBSnapshotAttribute",
+                "rds:CopyDBSnapshot",
+            ],
+        ),
+        # DynamoDB: 1+ read → infer table access
+        (
+            ["dynamodb:ListTables"],
+            1,
+            [
+                "dynamodb:DescribeTable", "dynamodb:GetItem",
+                "dynamodb:PutItem", "dynamodb:Scan",
+            ],
+        ),
+        # CloudFormation: 2+ read → infer stack ops
+        (
+            ["cloudformation:DescribeStacks", "cloudformation:ListStacks"],
+            2,
+            [
+                "cloudformation:CreateStack",
+                "cloudformation:UpdateStack",
+                "cloudformation:GetTemplate",
+            ],
+        ),
+        # SNS/SQS: 1+ read → infer publish/send
+        (
+            ["sns:ListTopics", "sns:ListSubscriptions"],
+            1,
+            ["sns:Publish", "sns:Subscribe"],
+        ),
+        (
+            ["sqs:ListQueues"],
+            1,
+            ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:GetQueueAttributes"],
+        ),
+        # Logs: 1+ read → infer log access
+        (
+            ["logs:DescribeLogGroups"],
+            1,
+            ["logs:GetLogEvents", "logs:FilterLogEvents"],
         ),
     ]
 

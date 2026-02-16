@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.identity
+atlas.recon.auth.identity
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Discovers IAM users, roles, groups, and instance profiles.
 

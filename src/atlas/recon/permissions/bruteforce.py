@@ -1,6 +1,6 @@
 """
-atlas.recon.collectors.bruteforce_perms
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+atlas.recon.permissions.bruteforce
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 IAM permission brute-force enumeration.
 
 When policy documents and GetAccountAuthorizationDetails are unavailable,
@@ -245,7 +245,7 @@ def _load_enumerate_iam_probes() -> list[tuple[str, str, dict[str, Any], str]]:
 
     # Try vendored data first (always available if repo is intact)
     try:
-        from atlas.recon.collectors.enumerate_iam_data import ENUMERATE_IAM_TESTS
+        from atlas.recon.permissions.enumerate_iam_data import ENUMERATE_IAM_TESTS
         tests = ENUMERATE_IAM_TESTS
     except ImportError:
         pass

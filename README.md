@@ -35,15 +35,33 @@ Atlas is a next-generation AWS cloud adversary emulation platform. It helps red 
 
 ## Installation
 
+**Install with pipx (recommended):**
+
 ```bash
-pip install -e .
+# Install pipx if you don't have it
+sudo apt install pipx    # Linux/WSL
+brew install pipx         # macOS
+
+pipx ensurepath
+
+# Install Atlas
+pipx install git+https://github.com/Haggag-22/Atlas.git
 ```
 
-Optional extras:
+**Or install with pip (inside a virtual environment):**
 
 ```bash
-pip install -e ".[ai]"    # OpenAI for AI explanations and Q&A
-pip install -e ".[dev]"    # pytest, mypy, ruff for development
+python3 -m venv ~/.venv/atlas
+source ~/.venv/atlas/bin/activate
+pip install git+https://github.com/Haggag-22/Atlas.git
+```
+
+**For development (editable install):**
+
+```bash
+git clone https://github.com/Haggag-22/Atlas.git
+cd Atlas
+pip install -e ".[dev]"
 ```
 
 ---

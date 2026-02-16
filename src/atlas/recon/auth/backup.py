@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.backup
+atlas.recon.auth.backup
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Discovers AWS Backup plans, protected resources, and backup selections.
 

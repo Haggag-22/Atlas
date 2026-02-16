@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.resource
+atlas.recon.auth.resource
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Discovers AWS resources: S3 buckets, EC2 instances, Lambda functions,
 RDS instances, KMS keys, Secrets Manager secrets, SSM parameters, and

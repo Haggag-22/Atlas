@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.logging_config
+atlas.recon.auth.logging_config
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Discovers the account's logging and detection posture:
   - CloudTrail trails and their status

@@ -1,5 +1,5 @@
 """
-atlas.recon.collectors.enumerate_iam_data
+atlas.recon.permissions.enumerate_iam_data
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Vendored probe list from Andres Riancho's enumerate-iam.
 

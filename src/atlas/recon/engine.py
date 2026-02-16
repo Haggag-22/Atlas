@@ -24,14 +24,14 @@ from atlas.core.permission_map import PermissionMap
 from atlas.core.telemetry import TelemetryRecorder
 from atlas.core.types import Layer, NodeType
 from atlas.recon.base import BaseCollector
-from atlas.recon.collectors.backup import BackupCollector
-from atlas.recon.collectors.guardrail import GuardrailCollector
-from atlas.recon.collectors.identity import IdentityCollector
-from atlas.recon.collectors.logging_config import LoggingConfigCollector
-from atlas.recon.collectors.permission_resolver import PermissionResolverCollector
-from atlas.recon.collectors.policy import PolicyCollector
-from atlas.recon.collectors.resource import ResourceCollector
-from atlas.recon.collectors.trust import TrustCollector
+from atlas.recon.auth.backup import BackupCollector
+from atlas.recon.auth.guardrail import GuardrailCollector
+from atlas.recon.auth.identity import IdentityCollector
+from atlas.recon.auth.logging_config import LoggingConfigCollector
+from atlas.recon.auth.policy import PolicyCollector
+from atlas.recon.auth.resource import ResourceCollector
+from atlas.recon.auth.trust import TrustCollector
+from atlas.recon.permissions.resolver import PermissionResolverCollector
 from atlas.utils.aws import create_async_session, get_caller_identity
 
 logger = structlog.get_logger(__name__)
