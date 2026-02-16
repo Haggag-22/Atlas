@@ -140,9 +140,19 @@ class ReconEngine:
     ) -> None:
         self._config = config
         self._recorder = recorder
+        self._progress_cb: Any = None  # optional callback for live UI
 
-    async def run(self) -> EnvironmentModel:
-        """Execute all enabled collectors and return the EnvironmentModel."""
+    async def run(
+        self,
+        progress_callback: Any = None,
+    ) -> EnvironmentModel:
+        """Execute all enabled collectors and return the EnvironmentModel.
+
+        Args:
+            progress_callback: Optional callable(collector_id, status, stats_or_error).
+                Called after each collector completes so the UI can update live.
+        """
+        self._progress_cb = progress_callback
         model = EnvironmentModel()
         session = create_async_session(self._config.aws)
 
@@ -177,6 +187,39 @@ class ReconEngine:
         root_arn = f"arn:aws:iam::{account_id}:root"
         model.graph.add_node(root_arn, NodeType.ACCOUNT, label=f"account:{account_id}")
 
+        # ── Ensure caller identity is in the graph ──────────────────
+        # Added BEFORE collectors so the permission_resolver / brute-force
+        # can attach discovered permissions to the caller node.
+        if ":user/" in caller_arn:
+            model.graph.add_node(
+                caller_arn, NodeType.USER,
+                data={
+                    "arn": caller_arn,
+                    "user_name": caller_arn.split("/")[-1],
+                    "user_id": identity.get("UserId", ""),
+                    "account_id": account_id,
+                },
+                label=caller_arn.split("/")[-1],
+            )
+        elif ":role/" in caller_arn or ":assumed-role/" in caller_arn:
+            if ":assumed-role/" in caller_arn:
+                parts = caller_arn.split("/")
+                role_name = parts[1] if len(parts) > 1 else parts[-1]
+                norm_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
+            else:
+                norm_arn = caller_arn
+            model.graph.add_node(
+                norm_arn, NodeType.ROLE,
+                data={
+                    "arn": norm_arn,
+                    "role_name": norm_arn.split("/")[-1],
+                    "role_id": identity.get("UserId", ""),
+                    "account_id": account_id,
+                },
+                label=norm_arn.split("/")[-1],
+            )
+        logger.info("caller_node_added", caller_arn=caller_arn)
+
         # ── Run collectors in order ────────────────────────────────
         enabled = self._config.recon.enabled_collectors
 
@@ -194,6 +237,10 @@ class ReconEngine:
                 recorder=self._recorder,
             )
 
+            # Inject brute-force progress callback for permission_resolver
+            if collector_id == "permission_resolver" and self._progress_cb:
+                collector._bf_progress_cb = self._progress_cb
+
             try:
                 stats = await collector.collect(account_id, region)
                 model.collector_stats[collector_id] = stats
@@ -207,6 +254,10 @@ class ReconEngine:
                 # Extract PermissionMap from permission_resolver
                 if "_permission_map" in stats:
                     model.permission_map = stats.pop("_permission_map")
+
+                # Notify live UI
+                if self._progress_cb:
+                    self._progress_cb(collector_id, "ok", stats)
 
             except Exception as exc:
                 logger.error(
@@ -222,6 +273,9 @@ class ReconEngine:
                     status="failure",
                     error=str(exc),
                 )
+                # Notify live UI
+                if self._progress_cb:
+                    self._progress_cb(collector_id, "error", str(exc))
 
         # ── Analyze findings ───────────────────────────────────────
         model.findings = (

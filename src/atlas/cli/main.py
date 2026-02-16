@@ -24,6 +24,7 @@ from typing import Any, Optional
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
@@ -106,6 +107,291 @@ def _print_summary(title: str, data: dict[str, Any]) -> None:
             v_str = str(v) if v is not None else "—"
         table.add_row(str(k), v_str)
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Live Permission Recon table
+# ---------------------------------------------------------------------------
+
+# Human-readable labels for each collector / sub-tier
+_COLLECTOR_LABELS: dict[str, tuple[str, str]] = {
+    "identity":            ("IAM Identity Enumeration",       "iam:ListUsers / iam:ListRoles"),
+    "policy":              ("IAM Policy Documents",           "iam:ListPolicies / iam:GetPolicyVersion"),
+    "trust":               ("Trust Relationships",            "iam:GetRole / Trust policies"),
+    "guardrail":           ("Guardrail / SCP Check",          "organizations:ListPolicies"),
+    "logging_config":      ("Logging Configuration",          "cloudtrail / guardduty"),
+    "resource":            ("Resource Enumeration",           "s3 / ec2 / lambda / rds ..."),
+    "backup":              ("Backup Plan Enumeration",        "backup:ListProtectedResources"),
+    # Sub-tiers inside permission_resolver (rendered individually)
+    "tier:policy_docs":    ("Policy Document Analysis",       "Tier 1 — parse cached policy JSON"),
+    "tier:auth_details":   ("GetAccountAuthorizationDetails", "Tier 2 — single API, all policies"),
+    "tier:simulate":       ("SimulatePrincipalPolicy",        "Tier 3 — ask AWS per-action allow/deny"),
+    "tier:piecemeal":      ("Piecemeal Policy Assembly",      "Tier 4 — ListAttached* + GetPolicyVersion"),
+    "tier:last_accessed":  ("Service Last Accessed",          "Tier 5 — historical usage data"),
+    "tier:bruteforce":     ("Brute-Force Enumeration",        "Tier 6 — try ~800 read-only API calls"),
+}
+
+# The display order: collectors first, then the sub-tiers within permission_resolver
+_COLLECTOR_ORDER = [
+    "identity", "policy", "trust", "guardrail",
+    "logging_config", "resource", "backup",
+]
+_TIER_ORDER = [
+    "tier:policy_docs", "tier:auth_details", "tier:simulate",
+    "tier:piecemeal", "tier:last_accessed", "tier:bruteforce",
+]
+
+
+class _LiveReconTable:
+    """Builds a Rich renderable that updates as collectors finish."""
+
+    def __init__(self) -> None:
+        self._rows: dict[str, tuple[str, str]] = {}   # id -> (status_markup, detail)
+        self._bf_done = 0
+        self._bf_total = 0
+        self._bf_ok = 0
+        self._allowed_perms: list[str] = []  # live list of allowed permissions
+        self._finished = False
+        self._perm_resolver_started = False  # first tier_progress received
+
+    # Called from the ReconEngine progress callback
+    def on_progress(self, collector_id: str, status: str, payload: Any) -> None:
+        if status == "bf_progress":
+            self._bf_done = payload.get("done", 0)
+            self._bf_total = payload.get("total", 0)
+            self._bf_ok = payload.get("succeeded", 0)
+            last = payload.get("last_allowed")
+            if last and last not in self._allowed_perms:
+                self._allowed_perms.append(last)
+            return
+
+        if status == "tier_progress":
+            # Sub-tier update from permission_resolver
+            self._perm_resolver_started = True
+            tier = payload.get("tier", "")
+            tier_status = payload.get("status", "")
+            detail = payload.get("detail", "")
+            key = f"tier:{tier}"
+            if tier_status == "ok":
+                self._rows[key] = ("[green]OK[/green]", detail)
+            elif tier_status == "denied":
+                _, hint = _COLLECTOR_LABELS.get(key, (tier, ""))
+                self._rows[key] = ("[red]DENIED[/red]", hint)
+            elif tier_status == "skipped":
+                self._rows[key] = ("[dim]SKIPPED[/dim]", "")
+            elif tier_status == "done":
+                self._rows[key] = ("[dim]DONE[/dim]", detail)
+            # "running" → not added to _rows yet, so build() shows spinner
+            return
+
+        # Regular collector finished
+        if status == "ok":
+            self._rows[collector_id] = (
+                "[green]OK[/green]",
+                self._detail_for(collector_id, payload),
+            )
+        else:
+            _, hint = _COLLECTOR_LABELS.get(collector_id, (collector_id, ""))
+            self._rows[collector_id] = ("[red]DENIED[/red]", hint)
+
+    def mark_finished(self) -> None:
+        self._finished = True
+
+    @staticmethod
+    def _detail_for(collector_id: str, stats: dict[str, Any]) -> str:
+        if collector_id == "identity":
+            return f"{stats.get('users_found', 0)} users, {stats.get('roles_found', 0)} roles"
+        if collector_id == "policy":
+            return f"{stats.get('policies_found', 0)} policies"
+        if collector_id == "trust":
+            return f"{stats.get('trust_relationships_found', 0)} trust policies"
+        if collector_id == "resource":
+            return f"{stats.get('s3_buckets', 0)} S3 buckets"
+        return "done"
+
+    def build_discovery_table(self) -> Table:
+        """Return the Permission Discovery table."""
+        table = Table(
+            title="Permission Discovery",
+            show_header=True,
+            title_style="bold white",
+            min_width=78,
+        )
+        table.add_column("#", style="dim", width=3, justify="right")
+        table.add_column("Method", style="cyan", min_width=30)
+        table.add_column("Status", justify="center", min_width=10)
+        table.add_column("Details", style="dim", min_width=28)
+
+        step = 0
+
+        # ── Regular collectors ──────────────────────────────────────
+        for cid in _COLLECTOR_ORDER:
+            step += 1
+            label, hint = _COLLECTOR_LABELS.get(cid, (cid, ""))
+            if cid in self._rows:
+                st, detail = self._rows[cid]
+                table.add_row(str(step), label, st, detail)
+            elif self._is_current_collector(cid):
+                table.add_row(str(step), label, "[yellow]⠿[/yellow]", "[dim]running...[/dim]")
+            else:
+                table.add_row(str(step), label, "[dim]—[/dim]", "")
+
+        # ── Permission resolution sub-tiers ─────────────────────────
+        if self._perm_resolver_started or self._all_collectors_done():
+            for tid in _TIER_ORDER:
+                step += 1
+                label, hint = _COLLECTOR_LABELS.get(tid, (tid, ""))
+
+                if tid in self._rows:
+                    st, detail = self._rows[tid]
+                    table.add_row(str(step), label, st, detail)
+                elif tid == "tier:bruteforce" and self._bf_done > 0:
+                    # Live brute-force progress bar
+                    pct = int(self._bf_done / self._bf_total * 100) if self._bf_total else 0
+                    bar_filled = pct // 5
+                    bar_empty = 20 - bar_filled
+                    bar = f"[green]{'━' * bar_filled}[/green][dim]{'━' * bar_empty}[/dim]"
+                    detail = f"{bar} {self._bf_done}/{self._bf_total}  [green]{self._bf_ok} ok[/green]"
+                    table.add_row(str(step), label, "[yellow]RUNNING[/yellow]", detail)
+                elif self._is_current_tier(tid):
+                    table.add_row(str(step), label, "[yellow]⠿[/yellow]", "[dim]running...[/dim]")
+                else:
+                    table.add_row(str(step), label, "[dim]—[/dim]", "")
+
+        return table
+
+    def build_allowed_table(self) -> Table:
+        """Return the live Allowed Permissions table (shown during brute-force)."""
+        table = Table(
+            title="Allowed Permissions (live)",
+            show_header=True,
+            title_style="bold green",
+            min_width=50,
+        )
+        table.add_column("Permission", style="cyan", min_width=36)
+        table.add_column("Status", justify="center", width=10)
+
+        for action in self._allowed_perms:
+            table.add_row(action, "[green]ALLOW[/green]")
+
+        if not self._allowed_perms:
+            table.add_row("[dim]waiting for results...[/dim]", "[dim]—[/dim]")
+
+        return table
+
+    def build(self) -> Table:
+        """Return the combined renderable for Rich Live.
+
+        During brute-force, returns a Group with both tables.
+        Otherwise returns just the discovery table.
+        """
+        from rich.console import Group as RichGroup
+
+        discovery = self.build_discovery_table()
+
+        # Show the live allowed-perms table when brute-force is running
+        bf_running = (
+            "tier:bruteforce" not in self._rows
+            and self._bf_done > 0
+        )
+        if bf_running or (self._allowed_perms and not self._finished):
+            allowed = self.build_allowed_table()
+            return RichGroup(discovery, "", allowed)  # type: ignore[return-value]
+
+        return discovery
+
+    def _all_collectors_done(self) -> bool:
+        """All regular collectors have reported."""
+        return all(c in self._rows for c in _COLLECTOR_ORDER)
+
+    def _is_current_collector(self, cid: str) -> bool:
+        for c in _COLLECTOR_ORDER:
+            if c not in self._rows:
+                return c == cid
+        return False
+
+    def _is_current_tier(self, tid: str) -> bool:
+        for t in _TIER_ORDER:
+            if t not in self._rows:
+                return t == tid
+        return False
+
+
+def _show_permission_recon_final(env_model: Any) -> None:
+    """Show the discovered-permissions table after recon completes."""
+    pmap = env_model.permission_map
+    # Show discovered permissions if we have any profiles with data
+    has_perms = any(
+        any(e.allowed for e in p.permissions.values())
+        for p in pmap._profiles.values()
+    )
+    if has_perms:
+        _show_discovered_permissions(pmap)
+
+
+def _show_discovered_permissions(pmap: Any) -> None:
+    """Show a table of permissions found via brute-force probing."""
+    from atlas.core.permission_map import PermissionConfidence
+
+    table = Table(
+        title="Discovered Permissions",
+        show_header=True,
+        title_style="bold white",
+    )
+    table.add_column("Permission", style="cyan", min_width=30)
+    table.add_column("Status", justify="center", width=10)
+    table.add_column("Confidence", justify="center", width=12)
+    table.add_column("Source", style="dim")
+
+    _conf_style = {
+        "confirmed": "[green]CONFIRMED[/green]",
+        "inferred": "[yellow]INFERRED[/yellow]",
+        "heuristic": "[dim]HEURISTIC[/dim]",
+        "unknown": "[dim]UNKNOWN[/dim]",
+    }
+
+    # Collect all allowed permissions across all profiles
+    allowed: list[tuple[str, str, str]] = []
+    for _arn, profile in pmap._profiles.items():
+        for action, entry in profile.permissions.items():
+            if entry.allowed:
+                conf = entry.confidence.value if hasattr(entry.confidence, "value") else str(entry.confidence)
+                source = entry.notes or (entry.source.value if hasattr(entry.source, "value") else str(entry.source))
+                allowed.append((action, conf, source))
+
+    # Sort: confirmed first, then by service:action
+    allowed.sort(key=lambda x: (0 if x[1] == "confirmed" else 1, x[0]))
+
+    # Show allowed (limit to 25 to keep it readable, show summary for rest)
+    shown = 0
+    for action, conf, source in allowed:
+        if shown >= 25:
+            break
+        status = "[green]ALLOW[/green]"
+        conf_display = _conf_style.get(conf, conf)
+        # Truncate long source notes
+        if len(source) > 40:
+            source = source[:37] + "..."
+        table.add_row(action, status, conf_display, source)
+        shown += 1
+
+    if len(allowed) > 25:
+        table.add_row(
+            f"[dim]... and {len(allowed) - 25} more[/dim]",
+            "", "", "",
+        )
+
+    # Count by confidence
+    confirmed = sum(1 for _, c, _ in allowed if c == "confirmed")
+    inferred = sum(1 for _, c, _ in allowed if c == "inferred")
+
+    console.print(table)
+    console.print(
+        f"  [bold]{len(allowed)}[/bold] permissions discovered"
+        f"  ([green]{confirmed} confirmed[/green]"
+        + (f", [yellow]{inferred} inferred[/yellow]" if inferred else "")
+        + ")\n"
+    )
 
 
 def _show_findings(findings: list[Any]) -> None:
@@ -399,12 +685,44 @@ def plan(
         else:
             console.print(f"\n[bold]Case[/bold]  [cyan]{case}[/cyan]  →  output/{case}/plan/")
 
-        # Recon
-        console.print("\n[bold cyan]═══ RECON ═══[/bold cyan]")
-        with Status("[cyan]Running reconnaissance...[/cyan]", console=console, spinner="dots"):
-            recon_engine = ReconEngine(config, recorder)
-            env_model = await recon_engine.run()
-        console.print("[green]  Recon complete.[/green]")
+        # Recon — live table
+        console.print("\n[bold cyan]═══ PERMISSIONS RECON ═══[/bold cyan]")
+        import logging as _logging
+        _prev_level = _logging.root.level
+        _logging.root.setLevel(_logging.CRITICAL)  # suppress noisy errors
+
+        live_tbl = _LiveReconTable()
+
+        def _recon_progress(collector_id: str, status: str, payload: Any) -> None:
+            live_tbl.on_progress(collector_id, status, payload)
+
+        recon_engine = ReconEngine(config, recorder)
+
+        async def _run_recon_with_live() -> Any:
+            with Live(live_tbl.build(), console=console, refresh_per_second=4, transient=True) as live:
+                import asyncio as _aio
+
+                async def _refresh_loop() -> None:
+                    while not live_tbl._finished:
+                        live.update(live_tbl.build())
+                        await _aio.sleep(0.25)
+
+                refresh_task = _aio.create_task(_refresh_loop())
+                try:
+                    model = await recon_engine.run(progress_callback=_recon_progress)
+                finally:
+                    live_tbl.mark_finished()
+                    await refresh_task
+                    live.update(live_tbl.build())  # final render
+                return model
+
+        env_model = await _run_recon_with_live()
+        _logging.root.setLevel(_prev_level)
+
+        # Print the final (static) table so it stays on screen
+        console.print(live_tbl.build_discovery_table())
+        console.print("[green]  Recon complete.[/green]\n")
+        _show_permission_recon_final(env_model)
         _print_summary("Environment", env_model.summary())
         _show_findings(env_model.findings)
 

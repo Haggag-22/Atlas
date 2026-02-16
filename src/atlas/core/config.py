@@ -111,6 +111,14 @@ class ReconConfig(BaseModel):
             "are unavailable. Adds ~10-15 read-only API calls."
         ),
     )
+    bruteforce_concurrency: int = Field(
+        default=25,
+        description=(
+            "Maximum concurrent API calls during brute-force permission "
+            "enumeration. Higher values speed up discovery but increase "
+            "network load and CloudTrail noise."
+        ),
+    )
 
 
 class PlannerConfig(BaseModel):

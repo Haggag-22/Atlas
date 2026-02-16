@@ -980,7 +980,7 @@ class AttackGraphBuilder:
                 if decoded_account:
                     # Key was already decoded offline — zero noise
                     detection_cost = 0.0
-                    noise = NoiseLevel.NONE
+                    noise = NoiseLevel.SILENT
                     api_actions = []
                     method_note = "OFFLINE DECODE (zero API calls)"
                 else:

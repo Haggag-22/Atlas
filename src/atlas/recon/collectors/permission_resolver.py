@@ -99,6 +99,12 @@ SENTINEL_PROBES: list[dict[str, Any]] = [
         "inferred_permissions": [
             "s3:ListBuckets", "s3:ListAllMyBuckets",
             "s3:GetBucketLocation", "s3:GetBucketPolicy",
+            "s3:GetObject", "s3:ListBucket",
+            "s3:GetBucketAcl", "s3:GetBucketPublicAccessBlock",
+        ],
+        # Permissions that MAY exist but can't be confirmed without writes
+        "speculative_permissions": [
+            "s3:PutObject", "s3:DeleteObject", "s3:PutBucketPolicy",
         ],
     },
     {
@@ -251,6 +257,120 @@ _RESOURCE_POLICY_SERVICES = {
     "ecr", "glacier", "es", "opensearch",
 }
 
+# ======================================================================
+# Brute-force error code classification
+# ======================================================================
+#
+# When a brute-force probe gets a ClientError, the error code tells us
+# whether the request was denied by IAM or rejected for other reasons.
+
+# Category 1: DENY — these error codes prove IAM denied the request.
+_DENY_ERROR_CODES: frozenset[str] = frozenset({
+    "AccessDenied",
+    "AccessDeniedException",
+    "UnauthorizedAccess",
+    "UnauthorizedOperation",
+    "AuthorizationError",
+    "AuthorizationErrorException",
+    "Client.UnauthorizedAccess",
+    "InvalidClientTokenId",
+    "SignatureDoesNotMatch",
+    "MissingAuthenticationToken",
+    "IncompleteSignature",
+    "ExpiredToken",
+    "ExpiredTokenException",
+})
+
+# Category 2: RESOURCE NOT FOUND — the request passed auth but the
+# resource doesn't exist.  This PROVES we have the IAM permission.
+_RESOURCE_NOT_FOUND_CODES: frozenset[str] = frozenset({
+    # S3
+    "NoSuchBucket", "NoSuchKey", "NoSuchUpload",
+    # IAM
+    "NoSuchEntity", "NoSuchEntityException",
+    # EC2
+    "InvalidInstanceID.NotFound", "InvalidGroupId.NotFound",
+    "InvalidSnapshot.NotFound", "InvalidVolumeID.NotFound",
+    "InvalidSubnetID.NotFound",
+    # Lambda / KMS / SecretsManager / DynamoDB / Logs / Backup
+    "ResourceNotFoundException",
+    # KMS
+    "NotFoundException",
+    # CloudFormation
+    "StackNotFoundException",
+    # RDS
+    "DBInstanceNotFoundFault", "DBSnapshotNotFoundFault",
+    # SSM
+    "ParameterNotFound",
+    # SQS
+    "QueueDoesNotExist", "AWS.SimpleQueueService.NonExistentQueue",
+    # SNS
+    "NotFound",
+    # ECS / EKS
+    "ClusterNotFoundException",
+    # Glue
+    "EntityNotFoundException",
+    # ElastiCache
+    "CacheClusterNotFoundFault",
+    # Redshift
+    "ClusterNotFoundFault",
+    # ECR
+    "RepositoryNotFoundException",
+    # CodeCommit
+    "RepositoryDoesNotExistException",
+})
+
+# Category 3: AMBIGUOUS — service-level errors that do NOT prove IAM
+# access.  The service rejected the request for non-auth reasons
+# (subscription required, org setup, region unsupported, etc.).
+_AMBIGUOUS_ERROR_CODES: frozenset[str] = frozenset({
+    # Subscription / service not enabled
+    "SubscriptionRequiredException",
+    "AWSOrganizationsNotInUseException",
+    "OptInRequired",
+    "InvalidClientException",
+    # Region / service unavailable
+    "UnsupportedOperation",
+    "UnsupportedOperationException",
+    "InvalidAction",
+    "UnknownOperationException",
+    # Org / account setup issues
+    "ForbiddenException",           # Chime, WorkMail — org-level block
+    "AccountNotManagementAccountException",
+    "OrganizationAccessDeniedException",
+    # Throttling (not auth-related)
+    "Throttling",
+    "ThrottlingException",
+    "RequestLimitExceeded",
+    "TooManyRequestsException",
+    # Service-specific non-auth
+    "AuthorizationAlreadyExistsFault",   # ElastiCache — misleading name
+    "WAFNonexistentItemException",
+})
+
+# Category 4: PARAM ERRORS — the request passed auth but had invalid
+# parameters.  AWS validates auth BEFORE parameters in most services,
+# so these strongly indicate we have the IAM permission.
+_PARAM_ERROR_CODES: frozenset[str] = frozenset({
+    "ValidationError",
+    "ValidationException",
+    "InvalidParameterValue",
+    "InvalidParameterException",
+    "InvalidParameterCombination",
+    "MissingParameter",
+    "MissingParameterException",
+    "MissingRequiredParameter",
+    "InvalidInput",
+    "InvalidInputException",
+    "InvalidRequestException",
+    "MalformedPolicyDocument",
+    "InvalidIdentityToken",
+    "InvalidArgument",
+    "InvalidArgumentException",
+    "SerializationException",
+    "MalformedQueryString",
+})
+
 
 class PermissionResolverCollector(BaseCollector):
     """Permission Mapping & Attack Surface Analysis.
@@ -284,13 +404,37 @@ class PermissionResolverCollector(BaseCollector):
             "iam:GetAccountAuthorizationDetails",  # Tier 2
         ]
 
+    def _emit_tier_progress(self, tier_name: str, status: str, detail: str = "") -> None:
+        """Notify the live UI about a sub-tier transition."""
+        cb = getattr(self, "_bf_progress_cb", None)
+        if cb:
+            cb("permission_resolver", "tier_progress", {
+                "tier": tier_name,
+                "status": status,
+                "detail": detail,
+            })
+
     async def collect(self, account_id: str, region: str) -> dict[str, Any]:
-        """Build the PermissionMap using the three-tier strategy."""
+        """Build the PermissionMap using the multi-tier strategy.
+
+        Resolution cascade (cheapest / quietest first):
+          Tier 1 — Policy document analysis       (0 API calls)
+          Tier 2 — GetAccountAuthorizationDetails  (1 API call)
+          Tier 3 — SimulatePrincipalPolicy         (few API calls, very precise)
+          Tier 4 — Piecemeal policy assembly       (several API calls)
+          Tier 5 — Service Last Accessed           (2 API calls, historical)
+          Tier 6 — Brute-force API enumeration     (~800 API calls)
+        """
         pmap = PermissionMap()
         stats: dict[str, Any] = {
             "tier_used": "none",
             "policy_docs_available": False,
             "account_auth_details_available": False,
+            "simulate_principal_used": False,
+            "simulate_actions_tested": 0,
+            "simulate_actions_allowed": 0,
+            "piecemeal_policies_fetched": 0,
+            "service_last_accessed_services": 0,
             "sentinel_probes_run": 0,
             "sentinel_probes_succeeded": 0,
             "implicit_permissions_tracked": 0,
@@ -336,63 +480,122 @@ class PermissionResolverCollector(BaseCollector):
             )
 
         # ── Tier 1: Policy document analysis ─────────────────────────
+        self._emit_tier_progress("policy_docs", "running")
         tier1_success = self._resolve_from_policy_documents(
             pmap, identities, account_id,
         )
         if tier1_success:
             stats["tier_used"] = "policy_document"
             stats["policy_docs_available"] = True
+            self._emit_tier_progress("policy_docs", "ok", "Full resolution from policy docs")
+            # Skip remaining tiers
+            for t in ("auth_details", "simulate", "piecemeal", "last_accessed", "bruteforce"):
+                self._emit_tier_progress(t, "skipped")
             logger.info(
                 "permission_resolution_tier1",
                 message="Policy documents available — full resolution",
             )
         else:
+            self._emit_tier_progress("policy_docs", "denied")
+
             # ── Tier 2: GetAccountAuthorizationDetails ───────────────
-            logger.info(
-                "permission_resolution_tier1_failed",
-                message="Policy documents unavailable — trying Tier 2",
-            )
+            self._emit_tier_progress("auth_details", "running")
             tier2_success = await self._resolve_from_account_auth_details(
                 pmap, account_id, region,
             )
             if tier2_success:
                 stats["tier_used"] = "account_auth_details"
                 stats["account_auth_details_available"] = True
+                self._emit_tier_progress("auth_details", "ok", "Full policy data")
+                for t in ("simulate", "piecemeal", "last_accessed", "bruteforce"):
+                    self._emit_tier_progress(t, "skipped")
                 logger.info(
                     "permission_resolution_tier2",
                     message="GetAccountAuthorizationDetails succeeded",
                 )
             else:
-                # ── Tier 3: Sentinel probes ──────────────────────────
-                logger.info(
-                    "permission_resolution_tier2_failed",
-                    message="GetAccountAuthorizationDetails denied — "
-                            "falling back to sentinel probes",
+                self._emit_tier_progress("auth_details", "denied")
+
+                # ── Tier 3: SimulatePrincipalPolicy ──────────────────
+                self._emit_tier_progress("simulate", "running")
+                sim_results = await self._resolve_from_simulate_policy(
+                    pmap, account_id, region, caller_arn or "",
                 )
-                if self._config.recon.enable_sentinel_probes:
-                    probe_results = await self._run_sentinel_probes(
-                        pmap, account_id, region,
+                stats["simulate_actions_tested"] = sim_results.get("tested", 0)
+                stats["simulate_actions_allowed"] = sim_results.get("allowed", 0)
+                if sim_results.get("success"):
+                    stats["simulate_principal_used"] = True
+                    stats["tier_used"] = "simulate_principal"
+                    self._emit_tier_progress(
+                        "simulate", "ok",
+                        f"{sim_results['allowed']}/{sim_results['tested']} allowed",
                     )
-                    stats["sentinel_probes_run"] = probe_results["total"]
-                    stats["sentinel_probes_succeeded"] = probe_results[
-                        "succeeded"
-                    ]
-                    if probe_results["succeeded"] > 0:
-                        stats["tier_used"] = "sentinel_probe"
-                    else:
-                        stats["tier_used"] = "blind"
-                    logger.info(
-                        "permission_resolution_tier3",
-                        succeeded=probe_results["succeeded"],
-                        total=probe_results["total"],
-                    )
+                    for t in ("piecemeal", "last_accessed", "bruteforce"):
+                        self._emit_tier_progress(t, "skipped")
                 else:
-                    stats["tier_used"] = "blind"
-                    logger.warning(
-                        "permission_resolution_blind",
-                        message="All tiers failed and sentinel probes "
-                                "are disabled. Permission model is UNKNOWN.",
+                    self._emit_tier_progress("simulate", "denied")
+
+                    # ── Tier 4: Piecemeal policy assembly ────────────
+                    self._emit_tier_progress("piecemeal", "running")
+                    piece_results = await self._resolve_from_piecemeal_policies(
+                        pmap, account_id, region, caller_arn or "",
                     )
+                    stats["piecemeal_policies_fetched"] = piece_results.get("policies_fetched", 0)
+                    if piece_results.get("success"):
+                        stats["tier_used"] = "piecemeal_policy"
+                        self._emit_tier_progress(
+                            "piecemeal", "ok",
+                            f"{piece_results['policies_fetched']} policies",
+                        )
+                        for t in ("last_accessed", "bruteforce"):
+                            self._emit_tier_progress(t, "skipped")
+                    else:
+                        self._emit_tier_progress("piecemeal", "denied")
+
+                    # ── Tier 5: Service Last Accessed (always try) ───
+                    # Cheap (2 API calls) and complements brute-force
+                    # with historical service-level evidence.
+                    if not piece_results.get("success"):
+                        self._emit_tier_progress("last_accessed", "running")
+                        sla_results = await self._resolve_from_service_last_accessed(
+                            pmap, account_id, region, caller_arn or "",
+                        )
+                        stats["service_last_accessed_services"] = sla_results.get("services_found", 0)
+                        if sla_results.get("success"):
+                            self._emit_tier_progress(
+                                "last_accessed", "ok",
+                                f"{sla_results['services_found']} services accessed",
+                            )
+                        else:
+                            self._emit_tier_progress("last_accessed", "denied")
+
+                    # ── Tier 6: Brute-force (always try when no full
+                    #    policy docs were found) ──────────────────────
+                    if not piece_results.get("success"):
+                        if self._config.recon.enable_sentinel_probes:
+                            self._emit_tier_progress("bruteforce", "running")
+                            probe_results = await self._run_sentinel_probes(
+                                pmap, account_id, region,
+                            )
+                            stats["sentinel_probes_run"] = probe_results["total"]
+                            stats["sentinel_probes_succeeded"] = probe_results[
+                                "succeeded"
+                            ]
+                            if probe_results["succeeded"] > 0:
+                                if not stats["tier_used"] or stats["tier_used"] == "none":
+                                    stats["tier_used"] = "sentinel_probe"
+                                self._emit_tier_progress(
+                                    "bruteforce", "ok",
+                                    f"{probe_results['succeeded']}/{probe_results['total']} succeeded",
+                                )
+                            else:
+                                if not stats["tier_used"] or stats["tier_used"] == "none":
+                                    stats["tier_used"] = "blind"
+                                self._emit_tier_progress("bruteforce", "done")
+                        else:
+                            if not stats["tier_used"] or stats["tier_used"] == "none":
+                                stats["tier_used"] = "blind"
+                            self._emit_tier_progress("bruteforce", "skipped")
 
         # ── Resource-based policies ──────────────────────────────────
         rp_count = self._load_resource_policies(pmap, account_id)
@@ -492,7 +695,7 @@ class PermissionResolverCollector(BaseCollector):
         """
         count = 0
         # Search for guardrail state nodes
-        for node_id in self._graph.all_nodes():
+        for node_id in list(self._graph._g.nodes):
             data = self._graph.get_node_data(node_id)
             if not data.get("scps"):
                 continue
@@ -1011,20 +1214,607 @@ class PermissionResolverCollector(BaseCollector):
             return False
 
     # ==================================================================
-    # Tier 3: Sentinel probes
+    # Tier 3: iam:SimulatePrincipalPolicy
     # ==================================================================
+    #
+    # The most powerful discovery method after full policy docs.
+    # We ask AWS directly "can principal X perform action Y on resource Z?"
+    # for hundreds of actions in a single API call — zero side effects,
+    # zero CloudTrail noise on target services.
+
+    # Actions we care about for attack-graph construction, grouped by
+    # service so we can batch them efficiently.
+    _SIMULATE_ACTIONS: list[str] = [
+        # IAM
+        "iam:CreateUser", "iam:CreateRole", "iam:CreatePolicy",
+        "iam:AttachUserPolicy", "iam:AttachRolePolicy",
+        "iam:PutUserPolicy", "iam:PutRolePolicy",
+        "iam:CreateAccessKey", "iam:CreateLoginProfile",
+        "iam:UpdateAssumeRolePolicy", "iam:PassRole",
+        "iam:AddUserToGroup", "iam:ListUsers", "iam:ListRoles",
+        "iam:ListPolicies", "iam:GetUser", "iam:GetRole",
+        "iam:GetPolicy", "iam:GetPolicyVersion",
+        "iam:ListAttachedUserPolicies", "iam:ListAttachedRolePolicies",
+        "iam:ListUserPolicies", "iam:ListRolePolicies",
+        "iam:ListGroupsForUser", "iam:SimulatePrincipalPolicy",
+        "iam:GetAccountAuthorizationDetails",
+        # STS
+        "sts:AssumeRole", "sts:GetCallerIdentity",
+        "sts:GetSessionToken", "sts:GetFederationToken",
+        # S3
+        "s3:ListAllMyBuckets", "s3:ListBucket",
+        "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+        "s3:GetBucketPolicy", "s3:PutBucketPolicy",
+        "s3:GetBucketAcl", "s3:PutBucketAcl",
+        "s3:GetBucketPublicAccessBlock",
+        # EC2
+        "ec2:DescribeInstances", "ec2:RunInstances",
+        "ec2:TerminateInstances", "ec2:DescribeSecurityGroups",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:DescribeSnapshots", "ec2:CreateSnapshot",
+        "ec2:ModifySnapshotAttribute", "ec2:DescribeImages",
+        "ec2:DescribeVpcs", "ec2:DescribeSubnets",
+        # Lambda
+        "lambda:ListFunctions", "lambda:GetFunction",
+        "lambda:CreateFunction", "lambda:InvokeFunction",
+        "lambda:UpdateFunctionCode", "lambda:AddPermission",
+        "lambda:GetPolicy",
+        # Secrets Manager
+        "secretsmanager:ListSecrets", "secretsmanager:GetSecretValue",
+        "secretsmanager:CreateSecret", "secretsmanager:PutSecretValue",
+        # SSM
+        "ssm:GetParameter", "ssm:GetParameters",
+        "ssm:DescribeParameters", "ssm:PutParameter",
+        "ssm:SendCommand",
+        # KMS
+        "kms:ListKeys", "kms:DescribeKey", "kms:Decrypt",
+        "kms:Encrypt", "kms:CreateGrant",
+        # CloudFormation
+        "cloudformation:ListStacks", "cloudformation:DescribeStacks",
+        "cloudformation:CreateStack", "cloudformation:UpdateStack",
+        # RDS
+        "rds:DescribeDBInstances", "rds:DescribeDBSnapshots",
+        "rds:CreateDBSnapshot", "rds:ModifyDBSnapshotAttribute",
+        # CloudTrail
+        "cloudtrail:DescribeTrails", "cloudtrail:StopLogging",
+        "cloudtrail:DeleteTrail", "cloudtrail:LookupEvents",
+        # GuardDuty
+        "guardduty:ListDetectors", "guardduty:DeleteDetector",
+        # Organizations
+        "organizations:ListAccounts", "organizations:DescribeOrganization",
+        # ECS / EKS
+        "ecs:ListClusters", "ecs:DescribeClusters",
+        "eks:ListClusters", "eks:DescribeCluster",
+        # SNS / SQS
+        "sns:ListTopics", "sns:Publish",
+        "sqs:ListQueues", "sqs:SendMessage",
+        # DynamoDB
+        "dynamodb:ListTables", "dynamodb:DescribeTable",
+        "dynamodb:GetItem", "dynamodb:PutItem",
+        # Logs
+        "logs:DescribeLogGroups", "logs:GetLogEvents",
+        "logs:CreateLogGroup",
+        # ECR
+        "ecr:DescribeRepositories", "ecr:GetAuthorizationToken",
+        # Glue
+        "glue:GetDatabases", "glue:GetConnections",
+        # Redshift
+        "redshift:DescribeClusters",
+        # ElastiCache
+        "elasticache:DescribeCacheClusters",
+        # Backup
+        "backup:ListProtectedResources",
+        "backup:ListBackupPlans",
+    ]
+
+    async def _resolve_from_simulate_policy(
+        self,
+        pmap: PermissionMap,
+        account_id: str,
+        region: str,
+        caller_arn: str,
+    ) -> dict[str, Any]:
+        """Tier 3: Use iam:SimulatePrincipalPolicy to test permissions.
+
+        Sends batches of actions to the IAM policy simulator and records
+        each result as CONFIRMED allow/deny.  This is extremely accurate
+        because AWS evaluates the full policy chain (identity + SCP +
+        boundary + resource policy).
+
+        Returns dict with: success, tested, allowed, denied.
+        """
+        results: dict[str, Any] = {
+            "success": False,
+            "tested": 0,
+            "allowed": 0,
+            "denied": 0,
+        }
+
+        if not caller_arn:
+            return results
+
+        # SimulatePrincipalPolicy accepts up to 50 actions per call.
+        BATCH_SIZE = 50
+        actions = list(self._SIMULATE_ACTIONS)
+
+        profile = pmap.get_or_create_profile(caller_arn)
+
+        try:
+            async with self._session.client("iam") as iam:
+                for i in range(0, len(actions), BATCH_SIZE):
+                    batch = actions[i : i + BATCH_SIZE]
+                    try:
+                        resp = await iam.simulate_principal_policy(
+                            PolicySourceArn=caller_arn,
+                            ActionNames=batch,
+                        )
+                    except ClientError as exc:
+                        code = exc.response.get("Error", {}).get("Code", "")
+                        if code in (
+                            "AccessDenied", "AccessDeniedException",
+                            "UnauthorizedAccess",
+                        ):
+                            logger.info("simulate_principal_denied", error=code)
+                            return results
+                        # NoSuchEntity — the ARN might need normalization
+                        if code == "NoSuchEntity":
+                            logger.info("simulate_principal_nosuchentity", arn=caller_arn)
+                            return results
+                        raise
+
+                    for eval_result in resp.get("EvaluationResults", []):
+                        action = eval_result.get("EvalActionName", "")
+                        decision = eval_result.get("EvalDecision", "")
+                        results["tested"] += 1
+
+                        if decision == "allowed":
+                            results["allowed"] += 1
+                            profile.add_permission(PermissionEntry(
+                                action=action,
+                                allowed=True,
+                                confidence=PermissionConfidence.CONFIRMED,
+                                source=PermissionSource.SIMULATE_PRINCIPAL,
+                                notes=f"SimulatePrincipalPolicy: {decision}",
+                            ))
+                        elif decision in (
+                            "explicitDeny", "implicitDeny",
+                        ):
+                            results["denied"] += 1
+                            profile.add_permission(PermissionEntry(
+                                action=action,
+                                allowed=False,
+                                confidence=PermissionConfidence.CONFIRMED,
+                                source=PermissionSource.DENY_CONFIRMED,
+                                notes=f"SimulatePrincipalPolicy: {decision}",
+                            ))
+
+                    self._record(
+                        "iam:SimulatePrincipalPolicy",
+                        detection_cost=get_detection_score(
+                            "iam:SimulatePrincipalPolicy"
+                        ),
+                        details={"batch_size": len(batch), "offset": i},
+                    )
+
+            results["success"] = True
+            logger.info(
+                "simulate_principal_complete",
+                tested=results["tested"],
+                allowed=results["allowed"],
+                denied=results["denied"],
+            )
+            return results
+
+        except Exception as exc:
+            logger.info("simulate_principal_failed", error=str(exc))
+            return results
+
+    # ==================================================================
+    # Tier 4: Piecemeal policy assembly
+    # ==================================================================
+    #
+    # When SimulatePrincipalPolicy is denied, try to read individual
+    # policy documents by:
+    #   1. iam:ListAttachedUserPolicies / ListAttachedRolePolicies
+    #   2. iam:GetPolicy + iam:GetPolicyVersion for each
+    #   3. iam:ListUserPolicies / ListRolePolicies (inline names)
+    #   4. iam:GetUserPolicy / GetRolePolicy (inline docs)
+    #   5. iam:ListGroupsForUser + group policies
+
+    async def _resolve_from_piecemeal_policies(
+        self,
+        pmap: PermissionMap,
+        account_id: str,
+        region: str,
+        caller_arn: str,
+    ) -> dict[str, Any]:
+        """Tier 4: Assemble policies by reading them individually.
+
+        Unlike GetAccountAuthorizationDetails (which reads ALL policies),
+        this only reads the caller's own policies — often allowed even
+        with restricted IAM access.
+        """
+        results: dict[str, Any] = {
+            "success": False,
+            "policies_fetched": 0,
+        }
+
+        if not caller_arn:
+            return results
+
+        is_user = ":user/" in caller_arn
+        is_role = ":role/" in caller_arn or ":assumed-role/" in caller_arn
+        entity_name = caller_arn.split("/")[-1] if "/" in caller_arn else ""
+
+        if not entity_name:
+            return results
+
+        # Normalize assumed-role ARN to role ARN
+        if ":assumed-role/" in caller_arn:
+            role_arn = f"arn:aws:iam::{account_id}:role/{entity_name}"
+        else:
+            role_arn = caller_arn
+
+        profile = pmap.get_or_create_profile(role_arn if is_role else caller_arn)
+        any_success = False
+
+        try:
+            async with self._session.client("iam") as iam:
+
+                # ── Attached managed policies ────────────────────────
+                attached_arns: list[str] = []
+                try:
+                    if is_user:
+                        resp = await iam.list_attached_user_policies(
+                            UserName=entity_name,
+                        )
+                        attached_arns = [
+                            p["PolicyArn"]
+                            for p in resp.get("AttachedPolicies", [])
+                        ]
+                        self._record("iam:ListAttachedUserPolicies")
+                    elif is_role:
+                        resp = await iam.list_attached_role_policies(
+                            RoleName=entity_name,
+                        )
+                        attached_arns = [
+                            p["PolicyArn"]
+                            for p in resp.get("AttachedPolicies", [])
+                        ]
+                        self._record("iam:ListAttachedRolePolicies")
+                    any_success = True
+                except ClientError:
+                    pass
+
+                # Fetch each managed policy document
+                for pol_arn in attached_arns:
+                    try:
+                        pol_resp = await iam.get_policy(PolicyArn=pol_arn)
+                        default_ver = pol_resp["Policy"].get(
+                            "DefaultVersionId", "v1",
+                        )
+                        ver_resp = await iam.get_policy_version(
+                            PolicyArn=pol_arn,
+                            VersionId=default_ver,
+                        )
+                        doc = ver_resp.get("PolicyVersion", {}).get(
+                            "Document", {},
+                        )
+                        if doc:
+                            self._extract_permissions_from_document(
+                                profile, doc,
+                                PermissionSource.PIECEMEAL_POLICY,
+                            )
+                            results["policies_fetched"] += 1
+                        self._record("iam:GetPolicyVersion")
+                    except ClientError:
+                        pass
+
+                # ── Inline policies ──────────────────────────────────
+                try:
+                    if is_user:
+                        resp = await iam.list_user_policies(
+                            UserName=entity_name,
+                        )
+                        policy_names = resp.get("PolicyNames", [])
+                        for pname in policy_names:
+                            try:
+                                pr = await iam.get_user_policy(
+                                    UserName=entity_name,
+                                    PolicyName=pname,
+                                )
+                                doc = pr.get("PolicyDocument", {})
+                                if doc:
+                                    self._extract_permissions_from_document(
+                                        profile, doc,
+                                        PermissionSource.PIECEMEAL_POLICY,
+                                    )
+                                    results["policies_fetched"] += 1
+                            except ClientError:
+                                pass
+                        self._record("iam:ListUserPolicies")
+                        any_success = True
+                    elif is_role:
+                        resp = await iam.list_role_policies(
+                            RoleName=entity_name,
+                        )
+                        policy_names = resp.get("PolicyNames", [])
+                        for pname in policy_names:
+                            try:
+                                pr = await iam.get_role_policy(
+                                    RoleName=entity_name,
+                                    PolicyName=pname,
+                                )
+                                doc = pr.get("PolicyDocument", {})
+                                if doc:
+                                    self._extract_permissions_from_document(
+                                        profile, doc,
+                                        PermissionSource.PIECEMEAL_POLICY,
+                                    )
+                                    results["policies_fetched"] += 1
+                            except ClientError:
+                                pass
+                        self._record("iam:ListRolePolicies")
+                        any_success = True
+                except ClientError:
+                    pass
+
+                # ── Group policies (users only) ──────────────────────
+                if is_user:
+                    try:
+                        resp = await iam.list_groups_for_user(
+                            UserName=entity_name,
+                        )
+                        for grp in resp.get("Groups", []):
+                            grp_name = grp.get("GroupName", "")
+                            # Attached group policies
+                            try:
+                                grp_attached = await iam.list_attached_group_policies(
+                                    GroupName=grp_name,
+                                )
+                                for gp in grp_attached.get(
+                                    "AttachedPolicies", [],
+                                ):
+                                    gp_arn = gp["PolicyArn"]
+                                    try:
+                                        gpr = await iam.get_policy(
+                                            PolicyArn=gp_arn,
+                                        )
+                                        dv = gpr["Policy"].get(
+                                            "DefaultVersionId", "v1",
+                                        )
+                                        gvr = await iam.get_policy_version(
+                                            PolicyArn=gp_arn,
+                                            VersionId=dv,
+                                        )
+                                        doc = gvr.get(
+                                            "PolicyVersion", {},
+                                        ).get("Document", {})
+                                        if doc:
+                                            self._extract_permissions_from_document(
+                                                profile, doc,
+                                                PermissionSource.PIECEMEAL_POLICY,
+                                            )
+                                            results["policies_fetched"] += 1
+                                    except ClientError:
+                                        pass
+                            except ClientError:
+                                pass
+                            # Inline group policies
+                            try:
+                                gip = await iam.list_group_policies(
+                                    GroupName=grp_name,
+                                )
+                                for gpname in gip.get("PolicyNames", []):
+                                    try:
+                                        gipr = await iam.get_group_policy(
+                                            GroupName=grp_name,
+                                            PolicyName=gpname,
+                                        )
+                                        doc = gipr.get(
+                                            "PolicyDocument", {},
+                                        )
+                                        if doc:
+                                            self._extract_permissions_from_document(
+                                                profile, doc,
+                                                PermissionSource.PIECEMEAL_POLICY,
+                                            )
+                                            results["policies_fetched"] += 1
+                                    except ClientError:
+                                        pass
+                            except ClientError:
+                                pass
+                        self._record("iam:ListGroupsForUser")
+                        any_success = True
+                    except ClientError:
+                        pass
+
+            if any_success and results["policies_fetched"] > 0:
+                results["success"] = True
+                profile.resolution_tier = "piecemeal_policy"
+                profile.policy_documents_available = True
+
+            logger.info(
+                "piecemeal_policy_complete",
+                policies_fetched=results["policies_fetched"],
+                success=results["success"],
+            )
+            return results
+
+        except Exception as exc:
+            logger.info("piecemeal_policy_failed", error=str(exc))
+            return results
+
+    # ==================================================================
+    # Tier 5: Service Last Accessed (historical usage data)
+    # ==================================================================
+    #
+    # iam:GenerateServiceLastAccessedDetails + GetServiceLastAccessedDetails
+    # reveals which services a principal has actually used recently.
+    # This gives HEURISTIC confidence (we know the service was used but
+    # not which specific actions).
+
+    async def _resolve_from_service_last_accessed(
+        self,
+        pmap: PermissionMap,
+        account_id: str,
+        region: str,
+        caller_arn: str,
+    ) -> dict[str, Any]:
+        """Tier 5: Use Service Last Accessed data for historical evidence.
+
+        If a principal accessed S3 last week, they definitely have some
+        S3 permissions.  This doesn't tell us exactly which actions, but
+        it narrows the search space and provides HEURISTIC-confidence
+        entries.
+        """
+        import asyncio as _aio
+
+        results: dict[str, Any] = {
+            "success": False,
+            "services_found": 0,
+        }
+
+        if not caller_arn:
+            return results
+
+        # Normalize assumed-role to role ARN
+        if ":assumed-role/" in caller_arn:
+            entity_name = caller_arn.split("/")[1] if "/" in caller_arn else ""
+            arn_for_api = f"arn:aws:iam::{account_id}:role/{entity_name}"
+        else:
+            arn_for_api = caller_arn
+
+        profile = pmap.get_or_create_profile(arn_for_api)
+
+        # Service namespace → representative actions to record
+        _SVC_ACTIONS: dict[str, list[str]] = {
+            "s3": ["s3:ListAllMyBuckets", "s3:GetObject", "s3:ListBucket"],
+            "ec2": ["ec2:DescribeInstances", "ec2:DescribeSecurityGroups"],
+            "iam": ["iam:ListUsers", "iam:ListRoles", "iam:GetUser"],
+            "lambda": ["lambda:ListFunctions", "lambda:GetFunction"],
+            "sts": ["sts:AssumeRole", "sts:GetCallerIdentity"],
+            "kms": ["kms:ListKeys", "kms:DescribeKey"],
+            "secretsmanager": ["secretsmanager:ListSecrets"],
+            "ssm": ["ssm:DescribeParameters", "ssm:GetParameter"],
+            "dynamodb": ["dynamodb:ListTables"],
+            "rds": ["rds:DescribeDBInstances"],
+            "sns": ["sns:ListTopics"],
+            "sqs": ["sqs:ListQueues"],
+            "logs": ["logs:DescribeLogGroups"],
+            "cloudformation": ["cloudformation:ListStacks"],
+            "cloudtrail": ["cloudtrail:DescribeTrails"],
+            "ecr": ["ecr:DescribeRepositories"],
+            "ecs": ["ecs:ListClusters"],
+            "eks": ["eks:ListClusters"],
+            "elasticache": ["elasticache:DescribeCacheClusters"],
+            "redshift": ["redshift:DescribeClusters"],
+            "glue": ["glue:GetDatabases"],
+            "backup": ["backup:ListProtectedResources"],
+        }
+
+        try:
+            async with self._session.client("iam") as iam:
+                # Step 1: Generate the report
+                gen_resp = await iam.generate_service_last_accessed_details(
+                    Arn=arn_for_api,
+                )
+                job_id = gen_resp.get("JobId", "")
+                if not job_id:
+                    return results
+
+                self._record("iam:GenerateServiceLastAccessedDetails")
+
+                # Step 2: Poll until the job completes (max ~30s)
+                for _ in range(15):
+                    await _aio.sleep(2)
+                    try:
+                        details_resp = await iam.get_service_last_accessed_details(
+                            JobId=job_id,
+                        )
+                    except ClientError:
+                        return results
+
+                    status = details_resp.get("JobStatus", "")
+                    if status == "COMPLETED":
+                        break
+                    if status == "FAILED":
+                        return results
+                else:
+                    # Timed out
+                    return results
+
+                self._record("iam:GetServiceLastAccessedDetails")
+
+                # Step 3: Process results
+                for svc_detail in details_resp.get(
+                    "ServicesLastAccessed", [],
+                ):
+                    namespace = svc_detail.get("ServiceNamespace", "")
+                    last_auth = svc_detail.get(
+                        "LastAuthenticated",
+                    )  # datetime or None
+
+                    if last_auth is not None and namespace:
+                        results["services_found"] += 1
+
+                        # Record representative actions at HEURISTIC confidence
+                        actions = _SVC_ACTIONS.get(namespace, [])
+                        if not actions:
+                            # Generic fallback
+                            actions = [f"{namespace}:*"]
+
+                        for action in actions:
+                            profile.add_permission(PermissionEntry(
+                                action=action,
+                                allowed=True,
+                                confidence=PermissionConfidence.HEURISTIC,
+                                source=PermissionSource.SERVICE_LAST_ACCESSED,
+                                notes=f"Service {namespace} last accessed: {last_auth}",
+                            ))
+
+            if results["services_found"] > 0:
+                results["success"] = True
+                if not profile.resolution_tier or profile.resolution_tier == "none":
+                    profile.resolution_tier = "service_last_accessed"
+
+            logger.info(
+                "service_last_accessed_complete",
+                services_found=results["services_found"],
+            )
+            return results
+
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            logger.info("service_last_accessed_denied", error=code)
+            return results
+        except Exception as exc:
+            logger.info("service_last_accessed_failed", error=str(exc))
+            return results
+
+    # ==================================================================
+    # Tier 6: IAM permission brute-force
+    # ==================================================================
+
     async def _run_sentinel_probes(
         self,
         pmap: PermissionMap,
         account_id: str,
         region: str,
     ) -> dict[str, int]:
-        """Run sentinel probes to empirically discover permissions.
+        """Brute-force IAM permissions by trying every read-only API.
 
-        Tests one read-only API per service family.  Results applied
-        to the CALLER identity.
+        Like enumerate-iam: tries ~100+ API calls and records which
+        succeed (CONFIRMED allow) vs get AccessDenied (CONFIRMED deny).
+        Results applied to the CALLER identity.
         """
+        from atlas.recon.collectors.bruteforce_perms import build_merged_probes
+        BRUTEFORCE_PROBES = build_merged_probes()
+        import asyncio as _asyncio
+
         results = {"total": 0, "succeeded": 0, "denied": 0, "errors": 0}
+        _bf_total_probes = len(BRUTEFORCE_PROBES) + 1  # +1 for s3:ListBuckets
+        _bf_cb = getattr(self, "_bf_progress_cb", None)
 
         # Use the resolved caller ARN
         caller_arn = pmap.caller_arn
@@ -1038,98 +1828,373 @@ class PermissionResolverCollector(BaseCollector):
             caller_arn = caller_identities[0]
 
         profile = pmap.get_or_create_profile(caller_arn)
-        profile.resolution_tier = "sentinel_probe"
+        profile.resolution_tier = "bruteforce"
 
-        for probe in SENTINEL_PROBES:
-            results["total"] += 1
-            service = probe["service"]
-            action = probe["action"]
-            method = probe["method"]
-            client_name = probe["client"]
-            kwargs = dict(probe.get("kwargs", {}))
+        # Resolve caller username for IAM self-probes
+        caller_username = caller_arn.split("/")[-1] if "/" in caller_arn else ""
 
-            try:
-                async with self._session.client(
-                    client_name, region_name=region
-                ) as client:
-                    api_method = getattr(client, method)
-                    await api_method(**kwargs)
-
-                # Success — this permission is confirmed
-                results["succeeded"] += 1
-                self._record(
-                    action,
-                    detection_cost=get_detection_score(action),
-                )
-
+        # Phase 1: run s3:ListBuckets first to get a bucket name for S3 probes
+        first_bucket: str = ""
+        first_trail: str = ""
+        try:
+            async with self._session.client("s3", region_name=region) as s3:
+                resp = await s3.list_buckets()
+                buckets = resp.get("Buckets", [])
+                if buckets:
+                    first_bucket = buckets[0]["Name"]
                 profile.add_permission(PermissionEntry(
-                    action=action,
+                    action="s3:ListBuckets",
                     allowed=True,
                     confidence=PermissionConfidence.CONFIRMED,
                     source=PermissionSource.SENTINEL_PROBE,
-                    notes=f"Sentinel probe succeeded for {service}",
+                    notes="Brute-force: s3:ListBuckets succeeded",
                 ))
+                results["succeeded"] += 1
+                results["total"] += 1
+        except Exception:
+            profile.add_permission(PermissionEntry(
+                action="s3:ListBuckets",
+                allowed=False,
+                confidence=PermissionConfidence.CONFIRMED,
+                source=PermissionSource.DENY_CONFIRMED,
+                notes="Brute-force: s3:ListBuckets denied",
+            ))
+            results["denied"] += 1
+            results["total"] += 1
 
-                for inferred_action in probe.get(
-                    "inferred_permissions", []
-                ):
-                    if inferred_action != action:
-                        profile.add_permission(PermissionEntry(
-                            action=inferred_action,
-                            allowed=True,
-                            confidence=PermissionConfidence.INFERRED,
-                            source=PermissionSource.SENTINEL_PROBE,
-                            notes=(
-                                f"Inferred from successful {action} probe"
-                            ),
-                        ))
+        if _bf_cb:
+            _bf_cb("permission_resolver", "bf_progress", {
+                "done": results["total"],
+                "total": _bf_total_probes,
+                "succeeded": results["succeeded"],
+                "last_allowed": "s3:ListBuckets" if results["succeeded"] > 0 else None,
+            })
 
-                logger.debug(
-                    "sentinel_probe_success",
-                    service=service,
-                    action=action,
-                )
+        # Phase 1b: get first trail name for cloudtrail probes
+        try:
+            async with self._session.client(
+                "cloudtrail", region_name=region
+            ) as ct:
+                resp = await ct.describe_trails()
+                trails = resp.get("trailList", [])
+                if trails:
+                    first_trail = trails[0].get("Name", "")
+        except Exception:
+            pass
 
-            except ClientError as exc:
-                error_code = exc.response.get("Error", {}).get("Code", "")
-                if error_code in (
-                    "AccessDenied", "UnauthorizedAccess",
-                    "AccessDeniedException", "AuthorizationError",
-                ):
-                    results["denied"] += 1
+        # Phase 2: run all other probes
+        sem = _asyncio.Semaphore(self._config.recon.bruteforce_concurrency)
+
+        async def _probe_one(
+            client_name: str, method: str,
+            kwargs: dict[str, Any], action: str,
+        ) -> None:
+            # Skip probes we already ran
+            if action == "s3:ListBuckets":
+                return
+
+            # Substitute dynamic placeholders
+            resolved_kwargs = dict(kwargs)
+            needs_bucket = any(
+                v == "__FIRST_BUCKET__" for v in resolved_kwargs.values()
+            )
+            needs_trail = any(
+                v == "__FIRST_TRAIL__" for v in resolved_kwargs.values()
+            )
+            needs_caller = any(
+                v == "__CALLER__" for v in resolved_kwargs.values()
+            )
+
+            if needs_bucket and not first_bucket:
+                return  # Can't test without a bucket
+            if needs_trail and not first_trail:
+                return
+            if needs_caller and not caller_username:
+                return
+
+            for k, v in resolved_kwargs.items():
+                if v == "__FIRST_BUCKET__":
+                    resolved_kwargs[k] = first_bucket
+                elif v == "__FIRST_TRAIL__":
+                    resolved_kwargs[k] = first_trail
+                elif v == "__CALLER__":
+                    resolved_kwargs[k] = caller_username
+
+            async with sem:
+                _this_allowed: str | None = None
+                try:
+                    async with self._session.client(
+                        client_name, region_name=region
+                    ) as client:
+                        api_method = getattr(client, method)
+                        await api_method(**resolved_kwargs)
+
+                    # Success — the API returned a real response
+                    results["succeeded"] += 1
+                    _this_allowed = action
                     profile.add_permission(PermissionEntry(
                         action=action,
-                        allowed=False,
+                        allowed=True,
                         confidence=PermissionConfidence.CONFIRMED,
-                        source=PermissionSource.DENY_CONFIRMED,
-                        notes=f"Sentinel probe denied: {error_code}",
+                        source=PermissionSource.SENTINEL_PROBE,
+                        notes=f"Brute-force: {action} succeeded",
                     ))
-                    logger.debug(
-                        "sentinel_probe_denied",
-                        service=service,
-                        action=action,
-                        error_code=error_code,
-                    )
-                else:
+                    logger.debug("bf_probe_ok", action=action)
+
+                except ClientError as exc:
+                    error_code = exc.response.get(
+                        "Error", {}
+                    ).get("Code", "")
+                    http_status = exc.response.get(
+                        "ResponseMetadata", {},
+                    ).get("HTTPStatusCode", 0)
+
+                    if error_code in _DENY_ERROR_CODES:
+                        # Definite IAM denial
+                        results["denied"] += 1
+                        profile.add_permission(PermissionEntry(
+                            action=action,
+                            allowed=False,
+                            confidence=PermissionConfidence.CONFIRMED,
+                            source=PermissionSource.DENY_CONFIRMED,
+                            notes=f"Brute-force: {error_code}",
+                        ))
+                        logger.debug(
+                            "bf_probe_denied",
+                            action=action, error_code=error_code,
+                        )
+                    elif error_code in _RESOURCE_NOT_FOUND_CODES:
+                        # "Resource not found" means we HAVE the permission
+                        # but the resource doesn't exist (e.g. NoSuchBucket)
+                        results["succeeded"] += 1
+                        _this_allowed = action
+                        profile.add_permission(PermissionEntry(
+                            action=action,
+                            allowed=True,
+                            confidence=PermissionConfidence.CONFIRMED,
+                            source=PermissionSource.SENTINEL_PROBE,
+                            notes=f"Brute-force: {error_code} (resource not found = permitted)",
+                        ))
+                        logger.debug(
+                            "bf_probe_resource_not_found",
+                            action=action, error_code=error_code,
+                        )
+                    elif error_code in _AMBIGUOUS_ERROR_CODES:
+                        # These errors don't prove IAM access — they're
+                        # service-level issues (subscription, org setup, etc.)
+                        results["errors"] += 1
+                        logger.debug(
+                            "bf_probe_ambiguous",
+                            action=action, error_code=error_code,
+                        )
+                    elif http_status == 403:
+                        # HTTP 403 with non-standard error code — still denial
+                        results["denied"] += 1
+                        profile.add_permission(PermissionEntry(
+                            action=action,
+                            allowed=False,
+                            confidence=PermissionConfidence.CONFIRMED,
+                            source=PermissionSource.DENY_CONFIRMED,
+                            notes=f"Brute-force: HTTP 403 ({error_code})",
+                        ))
+                        logger.debug(
+                            "bf_probe_403",
+                            action=action, error_code=error_code,
+                        )
+                    elif http_status in (400, 404, 409):
+                        # Client errors that indicate the API was reachable
+                        # and we passed auth, but params were wrong.
+                        # Only count as CONFIRMED if the error clearly
+                        # indicates "past the auth gate".
+                        if error_code in _PARAM_ERROR_CODES:
+                            # Param validation happens AFTER auth in most
+                            # services — this is a strong signal of access.
+                            results["succeeded"] += 1
+                            _this_allowed = action
+                            profile.add_permission(PermissionEntry(
+                                action=action,
+                                allowed=True,
+                                confidence=PermissionConfidence.CONFIRMED,
+                                source=PermissionSource.SENTINEL_PROBE,
+                                notes=f"Brute-force: {error_code} (post-auth error)",
+                            ))
+                            logger.debug(
+                                "bf_probe_param_err",
+                                action=action, error_code=error_code,
+                            )
+                        else:
+                            # Unknown 4xx — inconclusive
+                            results["errors"] += 1
+                            logger.debug(
+                                "bf_probe_unknown_4xx",
+                                action=action,
+                                error_code=error_code,
+                                http=http_status,
+                            )
+                    else:
+                        # Other errors — inconclusive, don't claim access
+                        results["errors"] += 1
+                        logger.debug(
+                            "bf_probe_other",
+                            action=action,
+                            error_code=error_code,
+                            http=http_status,
+                        )
+
+                except Exception as exc:
                     results["errors"] += 1
                     logger.debug(
-                        "sentinel_probe_error",
-                        service=service,
-                        action=action,
-                        error_code=error_code,
+                        "bf_probe_exception",
+                        action=action, error=str(exc),
                     )
 
-            except Exception as exc:
-                results["errors"] += 1
-                logger.debug(
-                    "sentinel_probe_exception",
-                    service=service,
-                    action=action,
-                    error=str(exc),
-                )
+                results["total"] += 1
+                if _bf_cb:
+                    _bf_cb(
+                        "permission_resolver",
+                        "bf_progress",
+                        {
+                            "done": results["total"],
+                            "total": _bf_total_probes,
+                            "succeeded": results["succeeded"],
+                            "last_allowed": _this_allowed,
+                        },
+                    )
 
-        logger.info("sentinel_probes_complete", **results)
+        # Fire all probes concurrently (capped by semaphore)
+        tasks = [
+            _probe_one(client_name, method, kwargs, action)
+            for client_name, method, kwargs, action in BRUTEFORCE_PROBES
+        ]
+        await _asyncio.gather(*tasks)
+
+        logger.info(
+            "bruteforce_probes_complete",
+            total=results["total"],
+            succeeded=results["succeeded"],
+            denied=results["denied"],
+            errors=results["errors"],
+        )
+
+        # ── Infer write permissions from confirmed read clusters ──────
+        # When the brute-force confirms a critical mass of read actions
+        # for a service, it strongly suggests broad access (e.g. s3:*).
+        # Add write permissions with INFERRED confidence so the attack
+        # graph can build write edges.
+        self._infer_write_from_read_cluster(profile, results)
+
         return results
+
+    # ==================================================================
+    # Write inference from confirmed read clusters
+    # ==================================================================
+    _WRITE_INFERENCE_RULES: list[tuple[list[str], int, list[str]]] = [
+        # (confirmed_read_actions, min_threshold, inferred_write_actions)
+        # S3: if 4+ read probes succeed, infer write access
+        (
+            [
+                "s3:ListBuckets", "s3:GetBucketPolicy", "s3:GetBucketAcl",
+                "s3:GetBucketLocation", "s3:GetPublicAccessBlock",
+                "s3:ListBucket", "s3:HeadBucket",
+            ],
+            4,
+            [
+                "s3:PutObject", "s3:DeleteObject", "s3:PutBucketPolicy",
+                "s3:GetObject",
+            ],
+        ),
+        # EC2: if 5+ describe calls succeed, infer modify access
+        (
+            [
+                "ec2:DescribeInstances", "ec2:DescribeSecurityGroups",
+                "ec2:DescribeVpcs", "ec2:DescribeSubnets",
+                "ec2:DescribeSnapshots", "ec2:DescribeVolumes",
+                "ec2:DescribeImages", "ec2:DescribeAddresses",
+                "ec2:DescribeKeyPairs", "ec2:DescribeNetworkInterfaces",
+            ],
+            5,
+            [
+                "ec2:RunInstances", "ec2:StartInstances",
+                "ec2:ModifyInstanceAttribute",
+            ],
+        ),
+        # IAM: if 5+ IAM read calls succeed, infer write access
+        (
+            [
+                "iam:ListUsers", "iam:ListRoles", "iam:ListGroups",
+                "iam:ListPolicies", "iam:ListAccessKeys",
+                "iam:GetAccountAuthorizationDetails",
+                "iam:GetAccountSummary",
+            ],
+            5,
+            [
+                "iam:CreateAccessKey", "iam:AttachUserPolicy",
+                "iam:AttachRolePolicy", "iam:PutUserPolicy",
+                "iam:PutRolePolicy", "iam:CreateRole",
+                "iam:UpdateAssumeRolePolicy",
+            ],
+        ),
+        # Lambda: if both list calls succeed, infer invoke/update
+        (
+            [
+                "lambda:ListFunctions", "lambda:ListLayers",
+                "lambda:ListEventSourceMappings",
+            ],
+            2,
+            [
+                "lambda:InvokeFunction", "lambda:UpdateFunctionCode",
+                "lambda:CreateFunction",
+            ],
+        ),
+    ]
+
+    def _infer_write_from_read_cluster(
+        self,
+        profile: "IdentityPermissionProfile",
+        results: dict[str, Any],
+    ) -> None:
+        """Infer write permissions when a cluster of reads is confirmed.
+
+        When brute-force confirms many read-only actions for a service
+        (e.g. 5+ S3 read probes succeed), it strongly suggests the
+        identity has broad access (e.g. AmazonS3FullAccess / s3:*).
+        In that case, add write permissions with INFERRED confidence
+        so the attack graph can build write edges.
+        """
+        confirmed_actions = {
+            a for a, e in profile.permissions.items()
+            if e.allowed and e.confidence == PermissionConfidence.CONFIRMED
+        }
+
+        inferred_count = 0
+        for read_actions, threshold, write_actions in self._WRITE_INFERENCE_RULES:
+            matches = sum(1 for a in read_actions if a in confirmed_actions)
+            if matches >= threshold:
+                for w_action in write_actions:
+                    # Don't override if already confirmed denied
+                    existing = profile.permissions.get(w_action)
+                    if existing and not existing.allowed:
+                        continue  # respect confirmed denies
+                    if existing and existing.allowed:
+                        continue  # already confirmed allowed
+                    profile.add_permission(PermissionEntry(
+                        action=w_action,
+                        allowed=True,
+                        confidence=PermissionConfidence.INFERRED,
+                        source=PermissionSource.SENTINEL_PROBE,
+                        notes=(
+                            f"Inferred from {matches}/{len(read_actions)} "
+                            f"confirmed read probes for this service"
+                        ),
+                    ))
+                    inferred_count += 1
+
+        if inferred_count:
+            logger.info(
+                "write_permissions_inferred",
+                inferred_count=inferred_count,
+                confirmed_reads=len(confirmed_actions),
+            )
 
     # ==================================================================
     # Implicit permission tracking
