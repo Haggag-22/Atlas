@@ -35,25 +35,24 @@ Atlas is a next-generation AWS cloud adversary emulation platform. It helps red 
 
 ## Installation
 
-**Install with pipx (recommended):**
+**Install from PyPI (recommended):**
 
 ```bash
-# Install pipx if you don't have it
-sudo apt install pipx    # Linux/WSL
-brew install pipx         # macOS
-
-pipx ensurepath
-
-# Install Atlas
-pipx install git+https://github.com/Haggag-22/Atlas.git
+pip install atlas-redteam
 ```
 
-**Or install with pip (inside a virtual environment):**
+**Or with pipx (isolated environment, no venv needed):**
 
 ```bash
-python3 -m venv ~/.venv/atlas
-source ~/.venv/atlas/bin/activate
-pip install git+https://github.com/Haggag-22/Atlas.git
+pipx install atlas-redteam
+```
+
+**Update to latest version:**
+
+```bash
+pip install --upgrade atlas-redteam
+# or
+pipx upgrade atlas-redteam
 ```
 
 **For development (editable install):**

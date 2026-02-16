@@ -348,9 +348,14 @@ _AMBIGUOUS_ERROR_CODES: frozenset[str] = frozenset({
     "WAFNonexistentItemException",
 })
 
-# Category 4: PARAM ERRORS — the request passed auth but had invalid
-# parameters.  AWS validates auth BEFORE parameters in most services,
-# so these strongly indicate we have the IAM permission.
+# Category 4: PARAM ERRORS — the request received a parameter-validation
+# error.  IMPORTANT: only a subset of AWS services validate auth BEFORE
+# parameters.  Many services (CloudWatch, DynamoDB, Elastic Beanstalk,
+# SSM, WorkDocs, Kinesis, CloudFormation, …) validate parameters FIRST
+# and return e.g. ValidationException regardless of whether the caller
+# has IAM permissions.  We therefore treat param errors as AMBIGUOUS by
+# default and only count them as proof-of-access for services listed in
+# _AUTH_BEFORE_PARAMS_SERVICES.
 _PARAM_ERROR_CODES: frozenset[str] = frozenset({
     "ValidationError",
     "ValidationException",
@@ -369,6 +374,25 @@ _PARAM_ERROR_CODES: frozenset[str] = frozenset({
     "InvalidArgumentException",
     "SerializationException",
     "MalformedQueryString",
+})
+
+# Services where AWS is known to validate IAM authorization BEFORE
+# parameter validation.  Only for these services do we treat a
+# parameter-validation error as proof of IAM access.
+_AUTH_BEFORE_PARAMS_SERVICES: frozenset[str] = frozenset({
+    "s3",
+    "iam",
+    "sts",
+    "ec2",
+    "lambda",
+    "rds",
+    "secretsmanager",
+    "kms",
+    "elasticache",
+    "redshift",
+    "ecr",
+    "ecs",
+    "eks",
 })
 
 
@@ -1964,8 +1988,15 @@ class PermissionResolverCollector(BaseCollector):
         # ── Error classification helper ───────────────────────────────
         def _classify_error(
             error_code: str, http_status: int,
+            service_name: str = "",
         ) -> tuple[str, bool]:
-            """Classify a ClientError → (category, is_allowed)."""
+            """Classify a ClientError → (category, is_allowed).
+
+            Parameter-validation errors are only treated as proof of
+            access for services in ``_AUTH_BEFORE_PARAMS_SERVICES``.
+            For all other services they are classified as *ambiguous*
+            because many AWS services validate params before auth.
+            """
             if error_code in _DENY_ERROR_CODES:
                 return ("deny", False)
             if error_code in _RESOURCE_NOT_FOUND_CODES:
@@ -1977,7 +2008,9 @@ class PermissionResolverCollector(BaseCollector):
             if http_status == 403:
                 return ("deny", False)
             if http_status in (400, 404, 409) and error_code in _PARAM_ERROR_CODES:
-                return ("allowed_post_auth", True)
+                if service_name in _AUTH_BEFORE_PARAMS_SERVICES:
+                    return ("allowed_post_auth", True)
+                return ("ambiguous_param_error", False)
             return ("unknown", False)
 
         # ── Retry wrapper for throttled calls ─────────────────────────
@@ -2064,16 +2097,21 @@ class PermissionResolverCollector(BaseCollector):
                     ).get("HTTPStatusCode", 0)
 
                     category, is_allowed = _classify_error(
-                        error_code, http_status,
+                        error_code, http_status, client_name,
                     )
 
                     if is_allowed:
                         results["succeeded"] += 1
                         _this_allowed = action
+                        _conf = (
+                            PermissionConfidence.CONFIRMED
+                            if category == "allowed_resource_missing"
+                            else PermissionConfidence.HIGH
+                        )
                         profile.add_permission(PermissionEntry(
                             action=action,
                             allowed=True,
-                            confidence=PermissionConfidence.CONFIRMED,
+                            confidence=_conf,
                             source=PermissionSource.SENTINEL_PROBE,
                             notes=f"Brute-force: {error_code} ({category})",
                         ))
@@ -2086,6 +2124,18 @@ class PermissionResolverCollector(BaseCollector):
                             source=PermissionSource.DENY_CONFIRMED,
                             notes=f"Brute-force: {error_code}",
                         ))
+                    elif category == "ambiguous_param_error":
+                        results["errors"] += 1
+                        logger.info(
+                            "bf_param_error_filtered",
+                            action=action,
+                            error_code=error_code,
+                            service=client_name,
+                            msg=(
+                                "Param error from non-allowlisted service "
+                                "— not counting as allowed"
+                            ),
+                        )
                     else:
                         results["errors"] += 1
 

@@ -14,6 +14,7 @@ from atlas.core.permission_map import (
 )
 from atlas.recon.permissions.resolver import (
     _AMBIGUOUS_ERROR_CODES,
+    _AUTH_BEFORE_PARAMS_SERVICES,
     _DENY_ERROR_CODES,
     _PARAM_ERROR_CODES,
     _RESOURCE_NOT_FOUND_CODES,
@@ -67,6 +68,32 @@ class TestErrorCodeSets:
     def test_sets_are_disjoint_deny_vs_param(self):
         overlap = _DENY_ERROR_CODES & _PARAM_ERROR_CODES
         assert len(overlap) == 0, f"Overlap: {overlap}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Auth-before-params service allowlist
+# ──────────────────────────────────────────────────────────────────────
+class TestAuthBeforeParamsServices:
+    """Verify the service allowlist for param-error trust."""
+
+    def test_allowlist_is_frozenset(self):
+        assert isinstance(_AUTH_BEFORE_PARAMS_SERVICES, frozenset)
+
+    def test_known_auth_first_services_present(self):
+        for svc in ("s3", "iam", "sts", "ec2", "lambda", "rds"):
+            assert svc in _AUTH_BEFORE_PARAMS_SERVICES, f"{svc} missing"
+
+    def test_known_param_first_services_absent(self):
+        """Services known to validate params before auth must NOT be
+        in the allowlist — their param errors are unreliable."""
+        for svc in (
+            "cloudwatch", "cloudformation", "dynamodb",
+            "elasticbeanstalk", "kinesis", "kinesisvideo",
+            "ssm", "workdocs",
+        ):
+            assert svc not in _AUTH_BEFORE_PARAMS_SERVICES, (
+                f"{svc} should not be trusted for param-error inference"
+            )
 
 
 # ──────────────────────────────────────────────────────────────────────
