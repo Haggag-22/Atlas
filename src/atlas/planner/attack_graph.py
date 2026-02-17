@@ -114,6 +114,10 @@ class AttackGraph:
             "can_enum_backup": "Backup Service Enumeration",
             "can_decode_key": "Access Key Account Decode",
             "can_loot_snapshot": "Public EBS Snapshot Loot",
+            "can_steal_imds_creds": "IMDS Credential Theft",
+            "can_ssm_session": "SSM Session / Command",
+            "can_snapshot_volume": "EC2 Volume Snapshot Loot",
+            "can_modify_userdata": "EC2 UserData Injection",
         }
         for e in self._edges:
             t = e.edge_type.value
@@ -170,6 +174,10 @@ class AttackGraphBuilder:
         self._add_backup_enumeration_edges(ag)
         self._add_key_account_decode_edges(ag)
         self._add_public_snapshot_edges(ag)
+        self._add_imds_credential_theft_edges(ag)
+        self._add_ssm_session_edges(ag)
+        self._add_volume_snapshot_edges(ag)
+        self._add_userdata_injection_edges(ag)
 
         logger.info("attack_graph_built", **ag.summary())
         return ag
@@ -1371,6 +1379,338 @@ class AttackGraphBuilder:
                     if "SourceIp" in key:
                         return True
         return False
+
+    # ==================================================================
+    # ATTACK PATH 13: IMDS Credential Theft (IMDSv1 → steal role creds)
+    # ==================================================================
+    def _add_imds_credential_theft_edges(self, ag: AttackGraph) -> None:
+        """Add edges for IMDS-based credential theft from EC2 instances.
+
+        EC2 instances with **IMDSv1 enabled** and an **instance profile**
+        (IAM role) are vulnerable to credential theft via the Instance
+        Metadata Service.  An attacker who can reach the instance
+        (via SSRF, shell, or SSM) can query
+        ``http://169.254.169.254/latest/meta-data/iam/security-credentials/``
+        to obtain temporary credentials for the instance's role.
+
+        This edge is created when:
+          1. The instance has IMDSv1 enabled (imds_v2_required == False)
+          2. The instance has an instance profile (role attached)
+          3. The caller has ec2:DescribeInstances (knows the target exists)
+
+        The edge goes from the caller identity to the instance profile's
+        role, representing lateral movement via credential theft.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+
+        for source in identities:
+            if not self._identity_has_permission(
+                source, "ec2:DescribeInstances",
+            ):
+                continue
+
+            for inst_arn in instances:
+                inst_data = self._env.get_node_data(inst_arn)
+                imds_v2_required = inst_data.get("imds_v2_required", True)
+                profile_arn = inst_data.get("instance_profile_arn")
+                instance_id = inst_data.get(
+                    "instance_id", inst_arn.split("/")[-1],
+                )
+                public_ip = inst_data.get("public_ip")
+                state = inst_data.get("state", "unknown")
+
+                if imds_v2_required or not profile_arn:
+                    continue
+                if state not in ("running", "unknown"):
+                    continue
+
+                detection = self._scorer.score("ec2:DescribeInstances")
+
+                prob = 0.70
+                notes_parts = [
+                    f"IMDS Credential Theft — instance {instance_id} "
+                    f"has IMDSv1 enabled with instance profile "
+                    f"{profile_arn}.",
+                    "An attacker with network access to the instance "
+                    "can query http://169.254.169.254/ to steal "
+                    "temporary role credentials without any API calls.",
+                ]
+
+                if public_ip:
+                    prob = 0.80
+                    notes_parts.append(
+                        f"Instance has public IP {public_ip} — "
+                        f"SSRF-based exploitation is possible from "
+                        f"the internet."
+                    )
+
+                has_ssm = self._identity_has_permission(
+                    source, "ssm:StartSession",
+                )
+                if has_ssm:
+                    prob = 0.90
+                    notes_parts.append(
+                        "Caller has ssm:StartSession — can directly "
+                        "access IMDS via SSM session."
+                    )
+
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=inst_arn,
+                    edge_type=EdgeType.CAN_STEAL_IMDS_CREDS,
+                    required_permissions=["ec2:DescribeInstances"],
+                    api_actions=["ec2:DescribeInstances"],
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=self._scorer.get_noise_level(
+                        "ec2:DescribeInstances",
+                    ),
+                    guardrail_status="clear",
+                    conditions={
+                        "imds_v2_required": False,
+                        "instance_profile_arn": profile_arn,
+                        "public_ip": public_ip,
+                    },
+                    notes=" ".join(notes_parts),
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 14: SSM Session / SendCommand
+    # ==================================================================
+    def _add_ssm_session_edges(self, ag: AttackGraph) -> None:
+        """Add edges for SSM-based command execution on EC2 instances.
+
+        If the caller has ``ssm:StartSession`` or ``ssm:SendCommand``,
+        they can execute arbitrary commands on EC2 instances that have
+        the SSM agent running.  This provides:
+          - Shell access to the instance
+          - Access to IMDS credentials (instance role)
+          - Access to local files, environment variables, secrets
+          - Lateral movement to other services the instance can reach
+
+        Detection: SSM sessions generate CloudTrail events and are
+        often monitored, but ``ssm:SendCommand`` with an inline script
+        is harder to detect than interactive sessions.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+
+        for source in identities:
+            has_start_session = self._identity_has_permission(
+                source, "ssm:StartSession",
+            )
+            has_send_command = self._identity_has_permission(
+                source, "ssm:SendCommand",
+            )
+
+            if not (has_start_session or has_send_command):
+                continue
+
+            for inst_arn in instances:
+                inst_data = self._env.get_node_data(inst_arn)
+                instance_id = inst_data.get(
+                    "instance_id", inst_arn.split("/")[-1],
+                )
+                state = inst_data.get("state", "unknown")
+
+                if state not in ("running", "unknown"):
+                    continue
+
+                if has_start_session:
+                    api = "ssm:StartSession"
+                    prob = 0.80
+                    noise = NoiseLevel.MEDIUM
+                else:
+                    api = "ssm:SendCommand"
+                    prob = 0.75
+                    noise = NoiseLevel.HIGH
+
+                detection = self._scorer.score(api)
+                prob *= self._get_permission_confidence_multiplier(
+                    source, api,
+                )
+
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=inst_arn,
+                    edge_type=EdgeType.CAN_SSM_SESSION,
+                    required_permissions=[api],
+                    api_actions=[api],
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=noise,
+                    guardrail_status="clear",
+                    notes=(
+                        f"SSM {api.split(':')[1]} on instance "
+                        f"{instance_id} — provides shell access, "
+                        f"local credential access, and lateral "
+                        f"movement capability."
+                    ),
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 15: EC2 Volume Snapshot Looting
+    # ==================================================================
+    def _add_volume_snapshot_edges(self, ag: AttackGraph) -> None:
+        """Add edges for creating snapshots of EC2 instance volumes.
+
+        If the caller has ``ec2:CreateSnapshot`` (and optionally
+        ``ec2:CreateVolume``), they can:
+          1. Create a snapshot of any instance's EBS volume
+          2. Create a new volume from the snapshot
+          3. Attach it to an instance they control
+          4. Mount and read the entire filesystem
+
+        This extracts: credentials, SSH keys, source code, database
+        files, configuration, application secrets — everything on disk.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+
+        for source in identities:
+            has_create_snap = self._identity_has_permission(
+                source, "ec2:CreateSnapshot",
+            )
+            if not has_create_snap:
+                continue
+
+            has_create_vol = self._identity_has_permission(
+                source, "ec2:CreateVolume",
+            )
+
+            for inst_arn in instances:
+                inst_data = self._env.get_node_data(inst_arn)
+                instance_id = inst_data.get(
+                    "instance_id", inst_arn.split("/")[-1],
+                )
+
+                detection = (
+                    self._scorer.score("ec2:CreateSnapshot")
+                    + self._scorer.score("ec2:CreateVolume")
+                )
+                prob = 0.85 if has_create_vol else 0.50
+                prob *= self._get_permission_confidence_multiplier(
+                    source, "ec2:CreateSnapshot",
+                )
+
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=inst_arn,
+                    edge_type=EdgeType.CAN_SNAPSHOT_VOLUME,
+                    required_permissions=["ec2:CreateSnapshot"],
+                    api_actions=[
+                        "ec2:CreateSnapshot",
+                        "ec2:CreateVolume",
+                        "ec2:AttachVolume",
+                    ],
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=NoiseLevel.HIGH,
+                    guardrail_status="clear",
+                    notes=(
+                        f"EC2 Volume Snapshot Loot — snapshot instance "
+                        f"{instance_id} volumes, create a new volume, "
+                        f"and mount it to extract credentials, SSH keys, "
+                        f"source code, and secrets from the filesystem."
+                    ),
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 16: EC2 UserData Injection
+    # ==================================================================
+    def _add_userdata_injection_edges(self, ag: AttackGraph) -> None:
+        """Add edges for injecting malicious user data into EC2 instances.
+
+        If the caller has ``ec2:ModifyInstanceAttribute``, they can
+        replace an instance's user data script.  On next boot (or if
+        the instance is stopped and started), the injected script runs
+        as root/SYSTEM.
+
+        This is a persistence + privilege escalation technique:
+          - Inject a reverse shell or credential harvester
+          - Runs with the instance's IAM role permissions
+          - Survives instance restarts
+          - Hard to detect (user data changes are rarely monitored)
+
+        Requires the instance to be STOPPED to modify user data, so
+        the attacker may also need ec2:StopInstances + ec2:StartInstances.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+
+        for source in identities:
+            has_modify = self._identity_has_permission(
+                source, "ec2:ModifyInstanceAttribute",
+            )
+            if not has_modify:
+                continue
+
+            has_stop = self._identity_has_permission(
+                source, "ec2:StopInstances",
+            )
+            has_start = self._identity_has_permission(
+                source, "ec2:StartInstances",
+            )
+
+            for inst_arn in instances:
+                inst_data = self._env.get_node_data(inst_arn)
+                instance_id = inst_data.get(
+                    "instance_id", inst_arn.split("/")[-1],
+                )
+                state = inst_data.get("state", "unknown")
+
+                detection = self._scorer.score(
+                    "ec2:ModifyInstanceAttribute",
+                )
+                api_actions = ["ec2:ModifyInstanceAttribute"]
+
+                if has_stop and has_start:
+                    prob = 0.80
+                    api_actions.extend([
+                        "ec2:StopInstances", "ec2:StartInstances",
+                    ])
+                elif state == "stopped":
+                    prob = 0.85
+                else:
+                    prob = 0.30
+
+                prob *= self._get_permission_confidence_multiplier(
+                    source, "ec2:ModifyInstanceAttribute",
+                )
+
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=inst_arn,
+                    edge_type=EdgeType.CAN_MODIFY_USERDATA,
+                    required_permissions=[
+                        "ec2:ModifyInstanceAttribute",
+                    ],
+                    api_actions=api_actions,
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=NoiseLevel.HIGH,
+                    guardrail_status="clear",
+                    notes=(
+                        f"EC2 UserData Injection — modify instance "
+                        f"{instance_id} user data to inject a "
+                        f"malicious script that runs as root on next "
+                        f"boot. Provides persistence and access to "
+                        f"the instance role credentials."
+                    ),
+                ))
 
 
 # ---------------------------------------------------------------------------

@@ -71,6 +71,10 @@ class EdgeType(str, Enum):
     CAN_ENUM_BACKUP = "can_enum_backup"    # identity -> account (backup service enumeration)
     CAN_DECODE_KEY = "can_decode_key"      # identity -> credential (account ID from access key)
     CAN_LOOT_SNAPSHOT = "can_loot_snapshot" # identity -> ebs_snapshot (public snapshot exfil)
+    CAN_STEAL_IMDS_CREDS = "can_steal_imds_creds"  # identity -> role (via IMDSv1 instance)
+    CAN_SSM_SESSION = "can_ssm_session"    # identity -> ec2 instance (SSM session/command)
+    CAN_SNAPSHOT_VOLUME = "can_snapshot_volume"  # identity -> ec2 instance (volume snapshot loot)
+    CAN_MODIFY_USERDATA = "can_modify_userdata"  # identity -> ec2 instance (inject user data)
 
     # Privilege escalation edges
     CAN_CREATE_KEY = "can_create_key"      # identity -> target_user

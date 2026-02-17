@@ -2221,6 +2221,9 @@ class PermissionResolverCollector(BaseCollector):
         # ── Infer write permissions from confirmed read clusters ──────
         self._infer_write_from_read_cluster(profile, results)
 
+        # ── Infer service wildcards from high confirmation rates ──────
+        self._infer_service_wildcards(profile, results)
+
         # ── Resource-scoped follow-up probes ──────────────────────────
         await self._probe_resource_scoped(
             profile, region, discovered_buckets=discovered_buckets,
@@ -2498,6 +2501,82 @@ class PermissionResolverCollector(BaseCollector):
                 "write_permissions_inferred",
                 inferred_count=inferred_count,
                 confirmed_reads=len(confirmed_actions),
+            )
+
+    # ==================================================================
+    # Service wildcard inference
+    # ==================================================================
+    # Minimum confirmed probes per service before inferring service:*
+    _WILDCARD_MIN_CONFIRMED = 3
+    # Minimum ratio of confirmed / (confirmed + denied) per service
+    _WILDCARD_MIN_RATIO = 0.75
+
+    def _infer_service_wildcards(
+        self,
+        profile: "IdentityPermissionProfile",
+        results: dict[str, Any],
+    ) -> None:
+        """Infer ``service:*`` when brute-force confirms most probes for a service.
+
+        If brute-force confirms >= 3 actions AND >= 75% of all probed
+        actions for a service, it strongly suggests the identity has
+        ``service:*`` access.  Adding a ``service:*`` PermissionEntry
+        lets the planner resolve permissions that weren't individually
+        probed (e.g. ``ec2:DescribeInstanceAttribute``).
+        """
+        # Tally per-service confirmed vs denied
+        service_confirmed: dict[str, int] = {}
+        service_denied: dict[str, int] = {}
+
+        for action, entry in profile.permissions.items():
+            if ":" not in action or action in ("*",):
+                continue
+            svc = action.split(":")[0]
+            if entry.allowed:
+                service_confirmed[svc] = service_confirmed.get(svc, 0) + 1
+            else:
+                service_denied[svc] = service_denied.get(svc, 0) + 1
+
+        inferred_count = 0
+        for svc, confirmed in service_confirmed.items():
+            denied = service_denied.get(svc, 0)
+            total = confirmed + denied
+            if total == 0:
+                continue
+            ratio = confirmed / total
+
+            if (
+                confirmed >= self._WILDCARD_MIN_CONFIRMED
+                and ratio >= self._WILDCARD_MIN_RATIO
+            ):
+                wildcard = f"{svc}:*"
+                existing = profile.permissions.get(wildcard)
+                if existing:
+                    continue
+
+                profile.add_permission(PermissionEntry(
+                    action=wildcard,
+                    allowed=True,
+                    confidence=PermissionConfidence.INFERRED,
+                    source=PermissionSource.SENTINEL_PROBE,
+                    notes=(
+                        f"Wildcard inferred: {confirmed}/{total} probes "
+                        f"confirmed ({ratio:.0%}) for {svc}"
+                    ),
+                ))
+                inferred_count += 1
+
+        if inferred_count:
+            results["wildcard_services_inferred"] = inferred_count
+            logger.info(
+                "service_wildcards_inferred",
+                count=inferred_count,
+                services=[
+                    svc for svc in service_confirmed
+                    if f"{svc}:*" in profile.permissions
+                    and profile.permissions[f"{svc}:*"].confidence
+                    == PermissionConfidence.INFERRED
+                ],
             )
 
     # ==================================================================
