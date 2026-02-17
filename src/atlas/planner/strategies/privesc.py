@@ -210,6 +210,10 @@ class PrivilegeEscalationStrategy(BaseStrategy):
             "can_enum_backup": "enum_backup",
             "can_decode_key": "decode_key_account",
             "can_loot_snapshot": "loot_public_snapshot",
+            "can_steal_imds_creds": "steal_imds_credentials",
+            "can_ssm_session": "ssm_session",
+            "can_snapshot_volume": "snapshot_volume_loot",
+            "can_modify_userdata": "inject_userdata",
         }
         return mapping.get(edge_type, edge_type)
 
@@ -238,5 +242,6 @@ class PrivilegeEscalationStrategy(BaseStrategy):
             "can_put_policy": "delete_inline_policy",
             "can_modify_trust": "restore_trust_policy",
             "can_update_lambda": "restore_lambda_code",
+            "can_modify_userdata": "restore_userdata",
         }
         return rollback_map.get(edge_type)

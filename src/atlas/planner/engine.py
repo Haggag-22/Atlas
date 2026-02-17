@@ -104,7 +104,23 @@ class PlannerEngine:
         noise_budget = NoiseBudgetManager(self._config.stealth.noise_budget)
 
         # ── Step 6: Determine source and target ────────────────────
+        # Normalize assumed-role ARNs so they match graph nodes.
+        # STS returns arn:aws:sts::...:assumed-role/Name/session
+        # but the graph stores arn:aws:iam::...:role/Name.
         source_identity = env_model.metadata.caller_arn
+        if ":assumed-role/" in source_identity:
+            parts = source_identity.split(":")
+            if len(parts) >= 6:
+                resource = parts[5]
+                role_parts = resource.split("/")
+                role_name = role_parts[1] if len(role_parts) > 1 else role_parts[-1]
+                account_id = parts[4]
+                source_identity = f"arn:aws:iam::{account_id}:role/{role_name}"
+                logger.debug(
+                    "normalized_caller_arn",
+                    raw=env_model.metadata.caller_arn,
+                    normalized=source_identity,
+                )
         target = self._determine_target(env_model, attack_graph, source_identity)
 
         logger.info(
@@ -176,6 +192,13 @@ class PlannerEngine:
     # ------------------------------------------------------------------
     # Target determination
     # ------------------------------------------------------------------
+
+    # Edge types that represent credential pivots (you become the target)
+    _PIVOT_EDGE_TYPES = {
+        "can_assume", "can_create_key",
+        "can_steal_imds_creds", "can_ssm_session",
+    }
+
     def _determine_target(
         self,
         env_model: EnvironmentModel,
@@ -186,10 +209,12 @@ class PlannerEngine:
 
         Priority:
           1. Explicit target from config
-          2. Admin/privileged role (if discoverable by name)
-          3. Any non-service-linked role reachable in the attack graph
-          4. Any other user
-          5. Account root (last resort fallback)
+          2. Privileged role reachable via any credential-pivot edge
+          3. Any non-service-linked role reachable via credential pivot
+          4. Any privileged-sounding role (even if not directly reachable)
+          5. Any non-service-linked reachable role (via graph path)
+          6. Any other user
+          7. Account root (last resort fallback)
         """
         from atlas.core.types import NodeType
 
@@ -198,7 +223,6 @@ class PlannerEngine:
         if explicit:
             return explicit
 
-        from atlas.core.types import NodeType
         roles = env_model.graph.nodes_of_type(NodeType.ROLE)
 
         privileged_keywords = (
@@ -206,37 +230,39 @@ class PlannerEngine:
             "security", "full-access",
         )
 
-        # 2. Look for privileged roles reachable via CAN_ASSUME (lowest noise)
+        # 2. Look for privileged roles reachable via any credential-pivot edge
         if attack_graph and source_identity:
             for edge in attack_graph.edges:
                 if (
                     edge.source_arn == source_identity
-                    and edge.edge_type.value == "can_assume"
+                    and edge.edge_type.value in self._PIVOT_EDGE_TYPES
+                    and ":role/" in edge.target_arn
                 ):
                     target_data = env_model.graph.get_node_data(edge.target_arn)
                     role_name = target_data.get("role_name", "").lower()
                     if any(kw in role_name for kw in privileged_keywords):
                         return edge.target_arn
 
-        # 3. Any non-service-linked role reachable via CAN_ASSUME
+        # 3. Any non-service-linked role reachable via credential pivot
         if attack_graph and source_identity:
             for edge in attack_graph.edges:
                 if (
                     edge.source_arn == source_identity
-                    and edge.edge_type.value == "can_assume"
+                    and edge.edge_type.value in self._PIVOT_EDGE_TYPES
+                    and ":role/" in edge.target_arn
                 ):
                     target_data = env_model.graph.get_node_data(edge.target_arn)
                     if not target_data.get("is_service_linked", False):
                         return edge.target_arn
 
-        # 4. Any privileged-sounding role (even if not directly assumable)
+        # 4. Any privileged-sounding role (even if not directly reachable)
         for role_arn in roles:
             data = env_model.graph.get_node_data(role_arn)
             role_name = data.get("role_name", "").lower()
             if any(kw in role_name for kw in privileged_keywords):
                 return role_arn
 
-        # 5. Any non-service-linked reachable role
+        # 5. Any non-service-linked reachable role (via graph path)
         if attack_graph and source_identity:
             import networkx as nx
             for role_arn in roles:

@@ -28,16 +28,24 @@ from atlas.planner.attack_graph import AttackGraph
 logger = structlog.get_logger(__name__)
 
 # Edge types that represent a credential pivot (you become a new identity)
-_PIVOT_TYPES = {"can_assume", "can_create_key"}
+_PIVOT_TYPES = {
+    "can_assume",
+    "can_create_key",
+    "can_steal_imds_creds",  # IMDS theft gives you the role's credentials
+    "can_ssm_session",       # SSM session gives shell + IMDS access to role
+}
 
 # Edge types that represent escalation (you gain more power as yourself or via target)
 _ESCALATION_TYPES = {
     "can_attach_policy", "can_put_policy", "can_modify_trust",
-    "can_passrole", "can_update_lambda",
+    "can_passrole", "can_update_lambda", "can_modify_userdata",
 }
 
 # Edge types that are terminal (resource access, not identity pivot)
-_TERMINAL_TYPES = {"can_read_s3", "can_write_s3"}
+_TERMINAL_TYPES = {
+    "can_read_s3", "can_write_s3",
+    "can_snapshot_volume",  # volume loot is a terminal action
+}
 
 
 class ChainFinder:

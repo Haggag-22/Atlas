@@ -198,6 +198,36 @@ def sample_graph() -> EnvironmentGraph:
 
 
 @pytest.fixture
+def sample_graph_with_ec2(sample_graph) -> EnvironmentGraph:
+    """Extend sample_graph with an EC2 instance that has IMDSv1 + instance profile."""
+    g = sample_graph
+
+    # EC2 instance with IMDSv1 enabled and an instance profile
+    g.add_node(
+        "arn:aws:ec2:us-east-1:123456789012:instance/i-0abc123def456",
+        NodeType.EC2_INSTANCE,
+        data={
+            "instance_id": "i-0abc123def456",
+            "arn": "arn:aws:ec2:us-east-1:123456789012:instance/i-0abc123def456",
+            "region": "us-east-1",
+            "state": "running",
+            "instance_profile_arn": "arn:aws:iam::123456789012:instance-profile/my-ec2-role",
+            "public_ip": "54.1.2.3",
+            "private_ip": "10.0.0.5",
+            "security_group_ids": ["sg-abc123"],
+            "subnet_id": "subnet-abc123",
+            "vpc_id": "vpc-abc123",
+            "user_data_available": False,
+            "imds_v2_required": False,
+            "tags": {"Name": "test-instance"},
+        },
+        label="i-0abc123def456",
+    )
+
+    return g
+
+
+@pytest.fixture
 def logging_state_active() -> LoggingState:
     """Active logging posture."""
     from atlas.core.models import CloudTrailConfig, GuardDutyConfig

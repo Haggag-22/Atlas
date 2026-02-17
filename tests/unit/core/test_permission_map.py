@@ -407,6 +407,55 @@ class TestPermissionMapTopLevel:
         assert scp_stmt.matches_action("s3:GetObject") is True
 
 
+class TestARNNormalization:
+    """Verify assumed-role ARNs are resolved to IAM role ARNs for profile lookup."""
+
+    def test_assumed_role_arn_resolves_to_iam_role(self):
+        pmap = PermissionMap()
+        role_arn = "arn:aws:iam::123456789012:role/MyRole"
+        profile = pmap.get_or_create_profile(role_arn)
+        profile.add_permission(PermissionEntry(
+            action="ec2:DescribeInstances",
+            allowed=True,
+            confidence=PermissionConfidence.CONFIRMED,
+            source=PermissionSource.SENTINEL_PROBE,
+        ))
+
+        # Query using the STS assumed-role ARN format
+        sts_arn = "arn:aws:sts::123456789012:assumed-role/MyRole/session-name"
+        assert pmap.identity_has_permission(sts_arn, "ec2:DescribeInstances") is True
+
+    def test_assumed_role_arn_get_profile(self):
+        pmap = PermissionMap()
+        role_arn = "arn:aws:iam::123456789012:role/TestRole"
+        profile = pmap.get_or_create_profile(role_arn)
+        profile.is_admin = True
+
+        sts_arn = "arn:aws:sts::123456789012:assumed-role/TestRole/my-session"
+        assert pmap.get_profile(sts_arn) is not None
+        assert pmap.is_admin(sts_arn) is True
+
+    def test_direct_iam_arn_still_works(self):
+        pmap = PermissionMap()
+        user_arn = "arn:aws:iam::123456789012:user/alice"
+        profile = pmap.get_or_create_profile(user_arn)
+        profile.add_permission(PermissionEntry(
+            action="s3:ListBuckets",
+            allowed=True,
+            confidence=PermissionConfidence.CONFIRMED,
+            source=PermissionSource.SENTINEL_PROBE,
+        ))
+
+        assert pmap.identity_has_permission(user_arn, "s3:ListBuckets") is True
+
+    def test_nonexistent_arn_returns_false(self):
+        pmap = PermissionMap()
+        assert pmap.identity_has_permission(
+            "arn:aws:sts::123456789012:assumed-role/NoSuchRole/session",
+            "ec2:DescribeInstances",
+        ) is False
+
+
 class TestNotActionPolicy:
     """FP-4: NotAction + Allow should NOT create phantom '*' entries."""
 

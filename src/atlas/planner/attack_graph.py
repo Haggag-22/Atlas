@@ -1393,13 +1393,10 @@ class AttackGraphBuilder:
         ``http://169.254.169.254/latest/meta-data/iam/security-credentials/``
         to obtain temporary credentials for the instance's role.
 
-        This edge is created when:
-          1. The instance has IMDSv1 enabled (imds_v2_required == False)
-          2. The instance has an instance profile (role attached)
-          3. The caller has ec2:DescribeInstances (knows the target exists)
-
-        The edge goes from the caller identity to the instance profile's
-        role, representing lateral movement via credential theft.
+        The edge targets the **instance profile's role** (not the
+        instance itself) so it chains into the identity graph for
+        path-finding.  If the role isn't already a graph node, a
+        synthetic node is created from the instance profile ARN.
         """
         identities = (
             self._env.nodes_of_type(NodeType.USER)
@@ -1427,6 +1424,11 @@ class AttackGraphBuilder:
                     continue
                 if state not in ("running", "unknown"):
                     continue
+
+                # Resolve instance profile → role ARN
+                role_arn = self._resolve_instance_profile_role(
+                    profile_arn, inst_arn,
+                )
 
                 detection = self._scorer.score("ec2:DescribeInstances")
 
@@ -1460,7 +1462,7 @@ class AttackGraphBuilder:
 
                 ag.add_edge(AttackEdge(
                     source_arn=source,
-                    target_arn=inst_arn,
+                    target_arn=role_arn,
                     edge_type=EdgeType.CAN_STEAL_IMDS_CREDS,
                     required_permissions=["ec2:DescribeInstances"],
                     api_actions=["ec2:DescribeInstances"],
@@ -1473,10 +1475,60 @@ class AttackGraphBuilder:
                     conditions={
                         "imds_v2_required": False,
                         "instance_profile_arn": profile_arn,
+                        "instance_arn": inst_arn,
                         "public_ip": public_ip,
                     },
                     notes=" ".join(notes_parts),
                 ))
+
+    # ------------------------------------------------------------------
+    # Helper: resolve instance profile ARN → role ARN
+    # ------------------------------------------------------------------
+    def _resolve_instance_profile_role(
+        self, profile_arn: str, inst_arn: str,
+    ) -> str:
+        """Resolve an instance profile ARN to a role ARN.
+
+        Strategy:
+          1. Look for a ROLE node in the graph whose data has a matching
+             instance profile (populated by the identity collector).
+          2. Derive the role name from the instance profile name
+             (AWS convention: profile name often matches role name).
+          3. Ensure the role node exists in the graph (create a
+             synthetic one if needed) so the attack graph can chain.
+        """
+        # Try to find a role whose instance profile matches
+        for role_arn in self._env.nodes_of_type(NodeType.ROLE):
+            role_data = self._env.get_node_data(role_arn)
+            if role_data.get("instance_profile_arn") == profile_arn:
+                return role_arn
+
+        # Derive role ARN from instance profile ARN
+        # arn:aws:iam::ACCOUNT:instance-profile/NAME → arn:aws:iam::ACCOUNT:role/NAME
+        parts = profile_arn.split(":")
+        if len(parts) >= 6 and "instance-profile/" in parts[5]:
+            profile_name = parts[5].replace("instance-profile/", "")
+            account_id = parts[4]
+            role_arn = f"arn:aws:iam::{account_id}:role/{profile_name}"
+
+            # Ensure the role node exists for path-finding
+            if not self._env.has_node(role_arn):
+                self._env.add_node(
+                    role_arn, NodeType.ROLE,
+                    data={
+                        "arn": role_arn,
+                        "role_name": profile_name,
+                        "account_id": account_id,
+                        "discovered_via": "instance_profile",
+                        "instance_profile_arn": profile_arn,
+                        "source_instance": inst_arn,
+                    },
+                    label=f"{profile_name} (via IMDS)",
+                )
+            return role_arn
+
+        # Fallback: target the instance itself
+        return inst_arn
 
     # ==================================================================
     # ATTACK PATH 14: SSM Session / SendCommand
@@ -1492,9 +1544,9 @@ class AttackGraphBuilder:
           - Access to local files, environment variables, secrets
           - Lateral movement to other services the instance can reach
 
-        Detection: SSM sessions generate CloudTrail events and are
-        often monitored, but ``ssm:SendCommand`` with an inline script
-        is harder to detect than interactive sessions.
+        When the instance has an instance profile, the edge targets the
+        profile's **role** (not the instance) to chain into the identity
+        graph for path-finding.  Otherwise it targets the instance.
         """
         identities = (
             self._env.nodes_of_type(NodeType.USER)
@@ -1519,9 +1571,18 @@ class AttackGraphBuilder:
                     "instance_id", inst_arn.split("/")[-1],
                 )
                 state = inst_data.get("state", "unknown")
+                profile_arn = inst_data.get("instance_profile_arn")
 
                 if state not in ("running", "unknown"):
                     continue
+
+                # Target the role if instance has a profile, else the instance
+                if profile_arn:
+                    target = self._resolve_instance_profile_role(
+                        profile_arn, inst_arn,
+                    )
+                else:
+                    target = inst_arn
 
                 if has_start_session:
                     api = "ssm:StartSession"
@@ -1539,7 +1600,7 @@ class AttackGraphBuilder:
 
                 ag.add_edge(AttackEdge(
                     source_arn=source,
-                    target_arn=inst_arn,
+                    target_arn=target,
                     edge_type=EdgeType.CAN_SSM_SESSION,
                     required_permissions=[api],
                     api_actions=[api],

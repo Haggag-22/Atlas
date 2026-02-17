@@ -839,6 +839,40 @@ class PermissionMap:
         )
 
     # ------------------------------------------------------------------
+    # ARN normalization
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_arn(arn: str) -> str:
+        """Normalize assumed-role ARNs to their IAM role equivalents.
+
+        STS assumed-role ARNs look like:
+          arn:aws:sts::123456789012:assumed-role/RoleName/session-name
+        But profiles are stored under the IAM role ARN:
+          arn:aws:iam::123456789012:role/RoleName
+
+        This ensures lookups work regardless of which ARN format is used.
+        """
+        if ":assumed-role/" in arn:
+            parts = arn.split(":")
+            if len(parts) >= 6:
+                resource = parts[5]
+                role_parts = resource.split("/")
+                role_name = role_parts[1] if len(role_parts) > 1 else role_parts[-1]
+                account_id = parts[4]
+                return f"arn:aws:iam::{account_id}:role/{role_name}"
+        return arn
+
+    def _resolve_profile(self, identity_arn: str) -> "IdentityPermissionProfile | None":
+        """Look up a profile, trying both the raw and normalized ARN."""
+        profile = self._profiles.get(identity_arn)
+        if profile:
+            return profile
+        normalized = self._normalize_arn(identity_arn)
+        if normalized != identity_arn:
+            return self._profiles.get(normalized)
+        return None
+
+    # ------------------------------------------------------------------
     # Query interface
     # ------------------------------------------------------------------
     def identity_has_permission(
@@ -854,6 +888,10 @@ class PermissionMap:
           1. SCP deny (account-level) — always checked
           2. SCP allow whitelist — action must be in at least one SCP
           3. Per-identity evaluation (deny → boundary → allow → resource)
+
+        Handles both raw STS ARNs (``arn:aws:sts::...:assumed-role/...``)
+        and normalized IAM ARNs (``arn:aws:iam::...:role/...``)
+        transparently.
         """
         # ── SCP deny check (even admins can be blocked by SCPs) ────
         for stmt in self._scp_deny_statements:
@@ -870,7 +908,7 @@ class PermissionMap:
                 return False
 
         # ── Per-identity evaluation ────────────────────────────────
-        profile = self._profiles.get(identity_arn)
+        profile = self._resolve_profile(identity_arn)
         if not profile:
             return False
         return profile.has_permission(action, resource_arn, min_confidence)
@@ -879,7 +917,7 @@ class PermissionMap:
         self, identity_arn: str, action: str, resource_arn: str = "*",
     ) -> PermissionConfidence:
         """Get confidence level for a permission check."""
-        profile = self._profiles.get(identity_arn)
+        profile = self._resolve_profile(identity_arn)
         if not profile:
             return PermissionConfidence.UNKNOWN
         return profile.get_confidence(action, resource_arn)
@@ -888,21 +926,21 @@ class PermissionMap:
         self, identity_arn: str, action: str, resource_arn: str = "*",
     ) -> float:
         """Get a success probability multiplier based on confidence."""
-        profile = self._profiles.get(identity_arn)
+        profile = self._resolve_profile(identity_arn)
         if not profile:
             return 0.0
         return profile.get_success_multiplier(action, resource_arn)
 
     def is_admin(self, identity_arn: str) -> bool:
         """Check if an identity has admin-level access."""
-        profile = self._profiles.get(identity_arn)
+        profile = self._resolve_profile(identity_arn)
         return profile.is_admin if profile else False
 
     def get_profile(
         self, identity_arn: str,
     ) -> IdentityPermissionProfile | None:
         """Get the full permission profile for an identity."""
-        return self._profiles.get(identity_arn)
+        return self._resolve_profile(identity_arn)
 
     def get_or_create_profile(
         self, identity_arn: str,
