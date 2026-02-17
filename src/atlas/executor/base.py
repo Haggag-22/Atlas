@@ -1,7 +1,7 @@
 """
 atlas.executor.base
 ~~~~~~~~~~~~~~~~~~~
-Abstract base class for executor actions.
+Abstract base class for executor actions..
 
 An action's job:
   1. Receive a PlannedAction from the planner.

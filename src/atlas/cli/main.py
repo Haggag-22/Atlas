@@ -29,11 +29,27 @@ from rich.panel import Panel
 from rich.table import Table
 
 console = Console()
+def _version_callback(value: bool) -> None:
+    if value:
+        from importlib.metadata import version
+        typer.echo(f"atlas-redteam {version('atlas-redteam')}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     name="atlas",
-    help="Atlas v2 — AWS Cloud Adversary Emulation Platform",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def _app_main(
+    version: bool = typer.Option(
+        False, "--version", "-V", help="Show version and exit.",
+        callback=_version_callback, is_eager=True,
+    ),
+) -> None:
+    """Atlas v2 — AWS Cloud Adversary Emulation Platform"""
 
 
 # ---------------------------------------------------------------------------

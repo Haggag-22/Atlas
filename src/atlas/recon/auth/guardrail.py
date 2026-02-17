@@ -4,7 +4,7 @@ atlas.recon.auth.guardrail
 Discovers guardrails: SCPs, permission boundaries, conditional policies.
 
 This data is critical for the planner's guardrail analyzer — it determines
-which attack paths are feasible vs. blocked.
+which attack paths are feasible vs. blocked..
 """
 
 from __future__ import annotations
