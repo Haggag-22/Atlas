@@ -118,10 +118,21 @@ class EnvironmentModel:
 
 
 class ReconEngine:
-    """Layer 1 orchestrator.  Runs collectors, builds EnvironmentModel."""
+    """Layer 1 orchestrator — two-phase recon.
 
-    # Collector registry (order matters — later collectors depend on earlier ones)
-    # permission_resolver MUST run LAST — it consumes data from all others.
+    Phase 1 — Permission Discovery:
+        Runs the ``permission_resolver`` first (brute-force + policy
+        analysis) to build a ``PermissionMap`` *before* any other
+        collector executes.
+
+    Phase 2 — Permission-Gated Auth Recon:
+        Runs all remaining collectors with the ``PermissionMap`` so
+        each collector can skip API calls it knows will fail.  This
+        reduces CloudTrail AccessDenied noise and speeds up collection.
+    """
+
+    # Registry of all available collectors (order within each phase
+    # is determined by _PHASE2_ORDER below).
     COLLECTOR_REGISTRY: dict[str, type[BaseCollector]] = {
         "identity": IdentityCollector,
         "policy": PolicyCollector,
@@ -133,6 +144,19 @@ class ReconEngine:
         "permission_resolver": PermissionResolverCollector,
     }
 
+    # Phase 2 collector order (permission_resolver is NOT here — it
+    # runs in Phase 1).  Identity and policy first so that the trust
+    # collector can read their graph nodes.
+    _PHASE2_ORDER: list[str] = [
+        "identity",
+        "policy",
+        "trust",
+        "guardrail",
+        "logging_config",
+        "resource",
+        "backup",
+    ]
+
     def __init__(
         self,
         config: AtlasConfig,
@@ -140,17 +164,88 @@ class ReconEngine:
     ) -> None:
         self._config = config
         self._recorder = recorder
-        self._progress_cb: Any = None  # optional callback for live UI
+        self._progress_cb: Any = None
 
+    # ------------------------------------------------------------------
+    # Internal: run a single collector and update the model
+    # ------------------------------------------------------------------
+    async def _run_collector(
+        self,
+        collector_id: str,
+        session: Any,
+        model: EnvironmentModel,
+        account_id: str,
+        region: str,
+        caller_arn: str,
+        *,
+        permission_map: PermissionMap | None = None,
+    ) -> None:
+        """Instantiate and execute a single collector."""
+        collector_cls = self.COLLECTOR_REGISTRY.get(collector_id)
+        if not collector_cls:
+            logger.warning("unknown_collector", collector_id=collector_id)
+            return
+
+        logger.info("collector_starting", collector=collector_id)
+        collector = collector_cls(
+            session=session,
+            config=self._config,
+            graph=model.graph,
+            recorder=self._recorder,
+            permission_map=permission_map,
+            caller_arn=caller_arn,
+        )
+
+        # Inject brute-force progress callback for permission_resolver
+        if collector_id == "permission_resolver" and self._progress_cb:
+            collector._bf_progress_cb = self._progress_cb
+
+        try:
+            stats = await collector.collect(account_id, region)
+            model.collector_stats[collector_id] = stats
+            logger.info("collector_complete", collector=collector_id, stats=stats)
+
+            # Extract guardrail/logging state if collector returned them
+            if "guardrail_state" in stats:
+                model.guardrail_state = GuardrailState(**stats["guardrail_state"])
+            if "logging_state" in stats:
+                model.logging_state = LoggingState(**stats["logging_state"])
+            # Extract PermissionMap from permission_resolver
+            if "_permission_map" in stats:
+                model.permission_map = stats.pop("_permission_map")
+
+            if self._progress_cb:
+                self._progress_cb(collector_id, "ok", stats)
+
+        except Exception as exc:
+            logger.error(
+                "collector_failed",
+                collector=collector_id,
+                error=str(exc),
+            )
+            model.collector_stats[collector_id] = {"error": str(exc)}
+            self._recorder.record(
+                layer=Layer.RECON,
+                event_type="collector_error",
+                action=collector_id,
+                status="failure",
+                error=str(exc),
+            )
+            if self._progress_cb:
+                self._progress_cb(collector_id, "error", str(exc))
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
     async def run(
         self,
         progress_callback: Any = None,
     ) -> EnvironmentModel:
         """Execute all enabled collectors and return the EnvironmentModel.
 
-        Args:
-            progress_callback: Optional callable(collector_id, status, stats_or_error).
-                Called after each collector completes so the UI can update live.
+        Two-phase execution:
+          Phase 1 — permission_resolver (builds PermissionMap)
+          Phase 2 — all other collectors (permission-gated)
         """
         self._progress_cb = progress_callback
         model = EnvironmentModel()
@@ -187,9 +282,7 @@ class ReconEngine:
         root_arn = f"arn:aws:iam::{account_id}:root"
         model.graph.add_node(root_arn, NodeType.ACCOUNT, label=f"account:{account_id}")
 
-        # ── Ensure caller identity is in the graph ──────────────────
-        # Added BEFORE collectors so the permission_resolver / brute-force
-        # can attach discovered permissions to the caller node.
+        # ── Ensure caller identity is in the graph ────────────────
         if ":user/" in caller_arn:
             model.graph.add_node(
                 caller_arn, NodeType.USER,
@@ -220,62 +313,33 @@ class ReconEngine:
             )
         logger.info("caller_node_added", caller_arn=caller_arn)
 
-        # ── Run collectors in order ────────────────────────────────
-        enabled = self._config.recon.enabled_collectors
+        enabled = set(self._config.recon.enabled_collectors)
 
-        for collector_id in enabled:
-            collector_cls = self.COLLECTOR_REGISTRY.get(collector_id)
-            if not collector_cls:
-                logger.warning("unknown_collector", collector_id=collector_id)
-                continue
-
-            logger.info("collector_starting", collector=collector_id)
-            collector = collector_cls(
-                session=session,
-                config=self._config,
-                graph=model.graph,
-                recorder=self._recorder,
+        # ══════════════════════════════════════════════════════════
+        # PHASE 1 — Permission Discovery
+        # ══════════════════════════════════════════════════════════
+        if "permission_resolver" in enabled:
+            logger.info("recon_phase", phase=1, description="Permission Discovery")
+            await self._run_collector(
+                "permission_resolver", session, model,
+                account_id, region, caller_arn,
             )
 
-            # Inject brute-force progress callback for permission_resolver
-            if collector_id == "permission_resolver" and self._progress_cb:
-                collector._bf_progress_cb = self._progress_cb
+        # ══════════════════════════════════════════════════════════
+        # PHASE 2 — Permission-Gated Auth Recon
+        # ══════════════════════════════════════════════════════════
+        logger.info("recon_phase", phase=2, description="Permission-Gated Auth Recon")
 
-            try:
-                stats = await collector.collect(account_id, region)
-                model.collector_stats[collector_id] = stats
-                logger.info("collector_complete", collector=collector_id, stats=stats)
+        pmap = model.permission_map if model.permission_map else None
 
-                # Extract guardrail/logging state if collector returned them
-                if "guardrail_state" in stats:
-                    model.guardrail_state = GuardrailState(**stats["guardrail_state"])
-                if "logging_state" in stats:
-                    model.logging_state = LoggingState(**stats["logging_state"])
-                # Extract PermissionMap from permission_resolver
-                if "_permission_map" in stats:
-                    model.permission_map = stats.pop("_permission_map")
-
-                # Notify live UI
-                if self._progress_cb:
-                    self._progress_cb(collector_id, "ok", stats)
-
-            except Exception as exc:
-                logger.error(
-                    "collector_failed",
-                    collector=collector_id,
-                    error=str(exc),
-                )
-                model.collector_stats[collector_id] = {"error": str(exc)}
-                self._recorder.record(
-                    layer=Layer.RECON,
-                    event_type="collector_error",
-                    action=collector_id,
-                    status="failure",
-                    error=str(exc),
-                )
-                # Notify live UI
-                if self._progress_cb:
-                    self._progress_cb(collector_id, "error", str(exc))
+        for collector_id in self._PHASE2_ORDER:
+            if collector_id not in enabled:
+                continue
+            await self._run_collector(
+                collector_id, session, model,
+                account_id, region, caller_arn,
+                permission_map=pmap,
+            )
 
         # ── Analyze findings ───────────────────────────────────────
         model.findings = (

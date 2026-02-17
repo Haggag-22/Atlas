@@ -18,7 +18,7 @@ A collector MUST NOT:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aioboto3
 import structlog
@@ -27,6 +27,9 @@ from atlas.core.config import AtlasConfig
 from atlas.core.graph import EnvironmentGraph
 from atlas.core.telemetry import TelemetryRecorder
 from atlas.core.types import Layer
+
+if TYPE_CHECKING:
+    from atlas.core.permission_map import PermissionMap
 
 logger = structlog.get_logger(__name__)
 
@@ -40,11 +43,16 @@ class BaseCollector(ABC):
         config: AtlasConfig,
         graph: EnvironmentGraph,
         recorder: TelemetryRecorder,
+        *,
+        permission_map: PermissionMap | None = None,
+        caller_arn: str = "",
     ) -> None:
         self._session = session
         self._config = config
         self._graph = graph
         self._recorder = recorder
+        self._permission_map = permission_map
+        self._caller_arn = caller_arn
 
     @property
     @abstractmethod
@@ -71,6 +79,19 @@ class BaseCollector(ABC):
     # ------------------------------------------------------------------
     # Helpers available to all collectors
     # ------------------------------------------------------------------
+    def _caller_has(self, action: str) -> bool:
+        """Check if the caller has a specific IAM permission.
+
+        Returns ``True`` (optimistic) when no PermissionMap is
+        available so that collectors fall back to trying the API and
+        handling ``AccessDenied`` via ``safe_api_call()``.
+        """
+        if not self._permission_map or not self._caller_arn:
+            return True
+        return self._permission_map.identity_has_permission(
+            self._caller_arn, action,
+        )
+
     def _record(
         self,
         action: str,

@@ -45,7 +45,13 @@ class PolicyCollector(BaseCollector):
         stats = {
             "managed_policies": 0, "aws_managed_policies": 0,
             "inline_policies": 0, "policy_documents": 0,
+            "skipped_no_permission": 0,
         }
+
+        if not self._caller_has("iam:ListPolicies"):
+            logger.info("policy_skipped", reason="no iam:ListPolicies permission")
+            stats["skipped_no_permission"] = 1
+            return stats
 
         # Track all attached policy ARNs so we can fetch AWS-managed docs
         attached_policy_arns: set[str] = set()

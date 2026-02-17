@@ -78,7 +78,13 @@ class BackupCollector(BaseCollector):
             "backup_plans": 0,
             "backup_selections": 0,
             "new_resources_discovered": 0,
+            "skipped_no_permission": 0,
         }
+
+        if not self._caller_has("backup:ListProtectedResources"):
+            logger.info("backup_skipped", reason="no backup:List* permissions")
+            stats["skipped_no_permission"] = 1
+            return stats
 
         async with self._session.client("backup", region_name=region) as backup:
             # 1. Discover protected resources (the crown jewels)

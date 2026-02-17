@@ -55,21 +55,38 @@ class LoggingConfigCollector(BaseCollector):
         logging_state = LoggingState()
 
         # ── CloudTrail ─────────────────────────────────────────────
-        trails = await self._collect_cloudtrail(region)
-        logging_state.cloudtrail_trails = trails
+        if self._caller_has("cloudtrail:DescribeTrails"):
+            trails = await self._collect_cloudtrail(region)
+            logging_state.cloudtrail_trails = trails
+        else:
+            trails = []
+            logger.info("logging_skipped", service="cloudtrail", reason="no permission")
 
         # ── GuardDuty ──────────────────────────────────────────────
-        gd_config = await self._collect_guardduty(region)
-        logging_state.guardduty = gd_config
+        if self._caller_has("guardduty:ListDetectors"):
+            gd_config = await self._collect_guardduty(region)
+            logging_state.guardduty = gd_config
+        else:
+            gd_config = GuardDutyConfig()
+            logger.info("logging_skipped", service="guardduty", reason="no permission")
 
         # ── AWS Config ─────────────────────────────────────────────
-        logging_state.config_recorder_enabled = await self._check_config_recorder(region)
+        if self._caller_has("config:DescribeConfigurationRecorders"):
+            logging_state.config_recorder_enabled = await self._check_config_recorder(region)
+        else:
+            logger.info("logging_skipped", service="config", reason="no permission")
 
         # ── SecurityHub ────────────────────────────────────────────
-        logging_state.security_hub_enabled = await self._check_security_hub(region)
+        if self._caller_has("securityhub:GetEnabledStandards"):
+            logging_state.security_hub_enabled = await self._check_security_hub(region)
+        else:
+            logger.info("logging_skipped", service="securityhub", reason="no permission")
 
         # ── Access Analyzer ────────────────────────────────────────
-        logging_state.access_analyzer_enabled = await self._check_access_analyzer(region)
+        if self._caller_has("access-analyzer:ListAnalyzers"):
+            logging_state.access_analyzer_enabled = await self._check_access_analyzer(region)
+        else:
+            logger.info("logging_skipped", service="access-analyzer", reason="no permission")
 
         stats = {
             "cloudtrail_trails": len(trails),

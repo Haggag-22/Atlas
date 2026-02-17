@@ -48,7 +48,17 @@ class IdentityCollector(BaseCollector):
         ]
 
     async def collect(self, account_id: str, region: str) -> dict[str, Any]:
-        stats = {"users": 0, "roles": 0, "groups": 0, "access_keys": 0}
+        stats = {
+            "users": 0, "roles": 0, "groups": 0,
+            "access_keys": 0, "skipped_no_permission": 0,
+        }
+
+        has_iam_list = self._caller_has("iam:ListUsers")
+
+        if not has_iam_list:
+            logger.info("identity_skipped", reason="no iam:List* permissions")
+            stats["skipped_no_permission"] = 1
+            return stats
 
         async with self._session.client("iam") as iam:
             # ── Users ──────────────────────────────────────────────
@@ -62,22 +72,24 @@ class IdentityCollector(BaseCollector):
                 stats["access_keys"] += len(user.access_key_ids)
 
             # ── Roles ──────────────────────────────────────────────
-            raw_roles = await async_paginate(iam, "list_roles", "Roles")
-            self._record("iam:ListRoles", detection_cost=get_detection_score("iam:ListRoles"))
+            if self._caller_has("iam:ListRoles"):
+                raw_roles = await async_paginate(iam, "list_roles", "Roles")
+                self._record("iam:ListRoles", detection_cost=get_detection_score("iam:ListRoles"))
 
-            for raw in raw_roles:
-                role = self._parse_role(raw, account_id)
-                self._add_role_to_graph(role)
-                stats["roles"] += 1
+                for raw in raw_roles:
+                    role = self._parse_role(raw, account_id)
+                    self._add_role_to_graph(role)
+                    stats["roles"] += 1
 
             # ── Groups ─────────────────────────────────────────────
-            raw_groups = await async_paginate(iam, "list_groups", "Groups")
-            self._record("iam:ListGroups", detection_cost=get_detection_score("iam:ListGroups"))
+            if self._caller_has("iam:ListGroups"):
+                raw_groups = await async_paginate(iam, "list_groups", "Groups")
+                self._record("iam:ListGroups", detection_cost=get_detection_score("iam:ListGroups"))
 
-            for raw in raw_groups:
-                group = await self._enrich_group(iam, raw, account_id)
-                self._add_group_to_graph(group)
-                stats["groups"] += 1
+                for raw in raw_groups:
+                    group = await self._enrich_group(iam, raw, account_id)
+                    self._add_group_to_graph(group)
+                    stats["groups"] += 1
 
         logger.info(
             "identity_collection_complete",

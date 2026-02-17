@@ -399,12 +399,17 @@ _AUTH_BEFORE_PARAMS_SERVICES: frozenset[str] = frozenset({
 class PermissionResolverCollector(BaseCollector):
     """Permission Mapping & Attack Surface Analysis.
 
-    Runs AFTER all other collectors.  Builds the PermissionMap by
-    trying three resolution tiers in order, stopping at the first
-    tier that produces useful data.
+    Runs as **Phase 1** of the two-phase recon engine — BEFORE auth
+    collectors — so that its ``PermissionMap`` can gate which Phase 2
+    collectors actually make API calls.
+
+    Builds the PermissionMap by trying six resolution tiers in order,
+    stopping at the first tier that produces useful data.  When run
+    before auth collectors, Tier 1 (policy document analysis) will
+    naturally find no graph data and fall through to Tiers 2-6.
 
     Also processes:
-      - SCPs from GuardrailState
+      - SCPs from GuardrailState (when available)
       - Permission boundaries
       - Resource-based policies
       - Caller identity mapping

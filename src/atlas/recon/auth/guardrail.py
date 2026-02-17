@@ -53,7 +53,11 @@ class GuardrailCollector(BaseCollector):
         guardrail_state = GuardrailState()
 
         # ── SCPs (requires Organizations access — may fail gracefully) ──
-        scps = await self._collect_scps()
+        if self._caller_has("organizations:ListPolicies"):
+            scps = await self._collect_scps()
+        else:
+            scps = []
+            logger.info("guardrail_skipped", service="organizations", reason="no permission")
         guardrail_state.scps = scps
         stats["scps_found"] = len(scps)
 

@@ -63,27 +63,63 @@ class ResourceCollector(BaseCollector):
             "ssm_parameters": 0,
             "cloudformation_stacks": 0,
             "ebs_public_snapshots": 0,
+            "skipped_no_permission": 0,
         }
         resource_types = self._config.recon.resource_types
 
-        if "s3" in resource_types:
+        if "s3" in resource_types and self._caller_has("s3:ListBuckets"):
             stats["s3_buckets"] = await self._collect_s3(account_id, region)
-        if "ec2" in resource_types:
+        elif "s3" in resource_types:
+            logger.info("resource_skipped", service="s3", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "ec2" in resource_types and self._caller_has("ec2:DescribeInstances"):
             stats["ec2_instances"] = await self._collect_ec2(account_id, region)
-        if "lambda" in resource_types:
+        elif "ec2" in resource_types:
+            logger.info("resource_skipped", service="ec2", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "lambda" in resource_types and self._caller_has("lambda:ListFunctions"):
             stats["lambda_functions"] = await self._collect_lambda(account_id, region)
-        if "rds" in resource_types:
+        elif "lambda" in resource_types:
+            logger.info("resource_skipped", service="lambda", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "rds" in resource_types and self._caller_has("rds:DescribeDBInstances"):
             stats["rds_instances"] = await self._collect_rds(account_id, region)
-        if "kms" in resource_types:
+        elif "rds" in resource_types:
+            logger.info("resource_skipped", service="rds", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "kms" in resource_types and self._caller_has("kms:ListKeys"):
             stats["kms_keys"] = await self._collect_kms(account_id, region)
-        if "secretsmanager" in resource_types:
+        elif "kms" in resource_types:
+            logger.info("resource_skipped", service="kms", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "secretsmanager" in resource_types and self._caller_has("secretsmanager:ListSecrets"):
             stats["secrets_manager_secrets"] = await self._collect_secrets_manager(account_id, region)
-        if "ssm" in resource_types:
+        elif "secretsmanager" in resource_types:
+            logger.info("resource_skipped", service="secretsmanager", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "ssm" in resource_types and self._caller_has("ssm:DescribeParameters"):
             stats["ssm_parameters"] = await self._collect_ssm(account_id, region)
-        if "cloudformation" in resource_types:
+        elif "ssm" in resource_types:
+            logger.info("resource_skipped", service="ssm", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "cloudformation" in resource_types and self._caller_has("cloudformation:DescribeStacks"):
             stats["cloudformation_stacks"] = await self._collect_cloudformation(account_id, region)
-        if "ebs" in resource_types:
+        elif "cloudformation" in resource_types:
+            logger.info("resource_skipped", service="cloudformation", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "ebs" in resource_types and self._caller_has("ec2:DescribeSnapshots"):
             stats["ebs_public_snapshots"] = await self._collect_public_ebs_snapshots(account_id, region)
+        elif "ebs" in resource_types:
+            logger.info("resource_skipped", service="ebs", reason="no permission")
+            stats["skipped_no_permission"] += 1
 
         logger.info("resource_collection_complete", **stats)
         return stats
