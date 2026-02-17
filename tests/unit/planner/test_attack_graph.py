@@ -16,7 +16,7 @@ def test_build_from_sample_graph(sample_graph, logging_state_active):
     assert ag.node_count > 0
 
     summary = ag.summary()
-    assert "can_assume" in summary["edge_types"]
+    assert "Role Assumption" in summary["Attack Paths"]
 
 
 def test_role_assumption_edges(sample_graph, logging_state_active):
