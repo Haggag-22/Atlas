@@ -23,6 +23,15 @@ class AWSConfig(BaseModel):
     access_key_id: str | None = Field(None, exclude=True)   # never serialize
     secret_access_key: str | None = Field(None, exclude=True)
     session_token: str | None = Field(None, exclude=True)
+    user_agent_extra: str | None = Field(
+        None,
+        description=(
+            "Custom User-Agent suffix for API requests. Default: 'Atlas/<version>'. "
+            "Set to empty string '' to avoid Atlas identification (stealth mode). "
+            "GuardDuty can detect pentest distros (Kali, ParrotOS) and tool signatures; "
+            "see https://hackingthe.cloud/aws/avoiding-detection/guardduty-pentest/"
+        ),
+    )
 
 
 class SafetyConfig(BaseModel):
@@ -91,7 +100,8 @@ class ReconConfig(BaseModel):
     resource_types: list[str] = Field(
         default_factory=lambda: [
             "s3", "ec2", "lambda", "rds", "kms",
-            "secretsmanager", "ssm", "cloudformation", "ebs",
+            "secretsmanager", "ssm", "cloudformation", "ebs", "ecs",
+            "ecr", "cognito", "cloudfront",
         ],
         description="Which resource types the resource collector should enumerate.",
     )

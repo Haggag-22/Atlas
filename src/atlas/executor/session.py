@@ -23,6 +23,7 @@ import aioboto3
 import structlog
 
 from atlas.core.config import AWSConfig
+from atlas.utils.aws import _apply_atlas_user_agent
 
 logger = structlog.get_logger(__name__)
 
@@ -144,12 +145,17 @@ class SessionManager:
 
         # Use assumed role or created key credentials
         secret = getattr(self._current, "_secret_key", "")
-        return aioboto3.Session(
+        session = aioboto3.Session(
             aws_access_key_id=self._current.access_key_id,
             aws_secret_access_key=secret,
             aws_session_token=self._current.session_token,
             region_name=self._initial_config.region,
         )
+        _apply_atlas_user_agent(
+            session,
+            getattr(self._initial_config, "user_agent_extra", None),
+        )
+        return session
 
     def revert_to_previous(self) -> bool:
         """Pop the current credential and revert to the previous one.
@@ -174,4 +180,9 @@ class SessionManager:
             kwargs["aws_secret_access_key"] = self._initial_config.secret_access_key
             if self._initial_config.session_token:
                 kwargs["aws_session_token"] = self._initial_config.session_token
-        return aioboto3.Session(**kwargs)
+        session = aioboto3.Session(**kwargs)
+        _apply_atlas_user_agent(
+            session,
+            getattr(self._initial_config, "user_agent_extra", None),
+        )
+        return session

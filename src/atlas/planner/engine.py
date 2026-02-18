@@ -197,6 +197,7 @@ class PlannerEngine:
     _PIVOT_EDGE_TYPES = {
         "can_assume", "can_create_key",
         "can_steal_imds_creds", "can_ssm_session",
+        "can_steal_lambda_creds", "can_steal_ecs_task_creds",
     }
 
     def _determine_target(

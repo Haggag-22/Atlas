@@ -145,6 +145,21 @@ class EC2Instance(BaseModel):
     discovered_at: str = Field(default_factory=_now_iso)
 
 
+class ECSTaskDefinition(BaseModel):
+    """Represents an ECS task definition with its task role."""
+
+    model_config = {"frozen": True}
+
+    family: str
+    arn: str
+    region: str
+    task_role_arn: str | None = None
+    execution_role_arn: str | None = None
+    network_mode: str = "bridge"
+    launch_type: str = "EC2"  # EC2 | FARGATE
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
 class LambdaFunction(BaseModel):
     model_config = {"frozen": True}
 
@@ -203,6 +218,61 @@ class KMSKey(BaseModel):
     rotation_enabled: bool = False
     aliases: list[str] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class ECRRepository(BaseModel):
+    """Represents an ECR repository with its resource policy."""
+
+    model_config = {"frozen": True}
+
+    repository_name: str
+    arn: str
+    region: str
+    repository_uri: str = ""
+    resource_policy: dict[str, Any] | None = None
+    image_tag_mutability: str = "MUTABLE"
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class CognitoUserPool(BaseModel):
+    """Represents a Cognito User Pool (authn)."""
+
+    model_config = {"frozen": True}
+
+    pool_id: str
+    arn: str
+    region: str
+    name: str = ""
+    admin_create_user_config: dict[str, Any] = Field(default_factory=dict)
+    auto_verified_attributes: list[str] = Field(default_factory=list)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class CognitoIdentityPool(BaseModel):
+    """Represents a Cognito Identity Pool (federation -> temp AWS creds)."""
+
+    model_config = {"frozen": True}
+
+    identity_pool_id: str
+    arn: str
+    region: str
+    identity_pool_name: str = ""
+    roles: dict[str, str] = Field(default_factory=dict)  # authenticated, unauthenticated
+    allow_unauthenticated: bool = False
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class CloudFrontDistribution(BaseModel):
+    """Represents a CloudFront distribution with S3 origin (takeover vector)."""
+
+    model_config = {"frozen": True}
+
+    distribution_id: str
+    arn: str
+    origin_domain: str
+    origin_bucket: str
+    aliases: list[str] = Field(default_factory=list)
     discovered_at: str = Field(default_factory=_now_iso)
 
 

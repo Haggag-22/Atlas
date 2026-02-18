@@ -111,6 +111,21 @@ def test_ec2_attack_edges_with_admin_policy(sample_graph_with_ec2, logging_state
     assert "can_modify_userdata" in edge_types, "Should have userdata injection edge"
 
 
+def test_lambda_credential_theft_targets_role(sample_graph_with_lambda, logging_state_active):
+    """Lambda credential theft edge should target the execution role."""
+    scorer = DetectionScorer(logging_state_active)
+    builder = AttackGraphBuilder(sample_graph_with_lambda, scorer)
+    ag = builder.build()
+
+    alice_edges = ag.outgoing_edges("arn:aws:iam::123456789012:user/alice")
+    lambda_edges = [e for e in alice_edges if e.edge_type.value == "can_steal_lambda_creds"]
+    assert len(lambda_edges) >= 1, "Alice (admin) should have Lambda credential theft edges"
+
+    for edge in lambda_edges:
+        assert ":role/" in edge.target_arn
+        assert "lambda-exec-role" in edge.target_arn
+
+
 def test_chain_finder_discovers_imds_chains(sample_graph_with_ec2, logging_state_active):
     """ChainFinder should find IMDS credential theft as an attack chain."""
     from atlas.planner.chain_finder import ChainFinder

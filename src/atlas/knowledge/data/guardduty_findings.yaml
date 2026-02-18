@@ -23,14 +23,24 @@ findings:
     trigger_conditions: "Instance role credentials used from an IP outside AWS."
     related_api_actions:
       - "any API call using instance credentials from non-AWS IP"
-    avoidance_notes: "Use credentials only from within AWS (EC2, Lambda, CloudShell).  Never exfiltrate instance role credentials."
+    avoidance_notes: |
+      Use credentials only from within AWS (EC2, Lambda, CloudShell).
+      Bypass options: (1) Use from EC2 in same account — no alert.
+      (2) VPC Endpoints (SneakyEndpoints) — route API calls through
+      VPC endpoints from attacker EC2; bypassed for many services until
+      Oct 2024. As of mid-2025, GuardDuty detects VPC bypass for 26+
+      services (EC2, KMS, Secrets Manager, CloudTrail, etc.).
 
   - finding_type: "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.InsideAWS"
     severity: "high"
     trigger_conditions: "Instance role credentials used from a different AWS account or region than the instance."
     related_api_actions:
       - "any API call using instance credentials from different account"
-    avoidance_notes: "If pivoting via instance credentials, make calls from the same region/account where the instance runs."
+    avoidance_notes: |
+      Use creds from EC2 in the SAME account — compromise one instance,
+      steal creds from others, use from the initially compromised host.
+      No alert. VPC Endpoints bypass (SneakyEndpoints) also viable for
+      some services; verify current GuardDuty coverage before relying.
 
   - finding_type: "UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B"
     severity: "medium"
@@ -49,6 +59,19 @@ findings:
       - "iam:CreateLoginProfile"
     avoidance_notes: "Minimize IAM write operations.  Prefer role assumption over user creation."
 
+  # ── PenTest / User-Agent Findings ──────────────────────────────────────
+
+  - finding_type: "PenTest:IAMUser/KaliLinux"
+    severity: "low"
+    trigger_conditions: "AWS API requests from Kali Linux (User-Agent / OS fingerprint)."
+    related_api_actions:
+      - "any API call from Kali, ParrotOS, or Pentoo Linux"
+    avoidance_notes: |
+      GuardDuty detects pentest distros via User-Agent. Set aws.user_agent_extra: ""
+      in config for stealth mode (no Atlas identifier). Or use a proxy (Burp Suite)
+      to replace User-Agent with a benign value. See
+      https://hackingthe.cloud/aws/avoiding-detection/guardduty-pentest/
+
   # ── CloudTrail / Stealth Findings ──────────────────────────────────────
 
   - finding_type: "Stealth:IAMUser/CloudTrailLoggingDisabled"
@@ -57,7 +80,11 @@ findings:
     related_api_actions:
       - "cloudtrail:StopLogging"
       - "cloudtrail:DeleteTrail"
-    avoidance_notes: "NEVER disable CloudTrail.  Instant high-severity alert."
+    avoidance_notes: |
+      NEVER disable CloudTrail. Instant high-severity alert.
+      Obscuring alternatives (no log tampering): operate in unused regions
+      (weaker monitoring), short-lived actions, temporary STS creds
+      (harder attribution), cross-account actions (complicates tracing).
 
   - finding_type: "Stealth:IAMUser/PasswordPolicyChange"
     severity: "low"

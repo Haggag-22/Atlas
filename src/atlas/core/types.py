@@ -44,6 +44,11 @@ class NodeType(str, Enum):
     CLOUDFORMATION_STACK = "cloudformation_stack"
     BACKUP_PLAN = "backup_plan"
     EBS_SNAPSHOT = "ebs_snapshot"
+    ECS_TASK_DEFINITION = "ecs_task_definition"
+    ECR_REPOSITORY = "ecr_repository"
+    COGNITO_USER_POOL = "cognito_user_pool"
+    COGNITO_IDENTITY_POOL = "cognito_identity_pool"
+    CLOUDFRONT_DISTRIBUTION = "cloudfront_distribution"
     ACCOUNT = "account"
     CREDENTIAL = "credential"
 
@@ -75,6 +80,12 @@ class EdgeType(str, Enum):
     CAN_SSM_SESSION = "can_ssm_session"    # identity -> ec2 instance (SSM session/command)
     CAN_SNAPSHOT_VOLUME = "can_snapshot_volume"  # identity -> ec2 instance (volume snapshot loot)
     CAN_MODIFY_USERDATA = "can_modify_userdata"  # identity -> ec2 instance (inject user data)
+    CAN_STEAL_LAMBDA_CREDS = "can_steal_lambda_creds"  # identity -> role (via Lambda SSRF/XXE)
+    CAN_STEAL_ECS_TASK_CREDS = "can_steal_ecs_task_creds"  # identity -> role (via ECS container RCE)
+    CAN_ACCESS_VIA_RESOURCE_POLICY = "can_access_via_resource_policy"  # identity -> resource (Principal "*" etc.)
+    CAN_ASSUME_VIA_OIDC_MISCONFIG = "can_assume_via_oidc_misconfig"  # external -> role (GitLab/Terraform/GitHub/Cognito)
+    CAN_SELF_SIGNUP_COGNITO = "can_self_signup_cognito"  # identity -> cognito user pool
+    CAN_TAKEOVER_CLOUDFRONT_ORIGIN = "can_takeover_cloudfront_origin"  # finding: orphaned S3 origin
 
     # Privilege escalation edges
     CAN_CREATE_KEY = "can_create_key"      # identity -> target_user
@@ -83,7 +94,44 @@ class EdgeType(str, Enum):
     CAN_CREATE_ROLE = "can_create_role"
     CAN_UPDATE_LAMBDA = "can_update_lambda"
     CAN_CREATE_LAMBDA = "can_create_lambda"
+    CAN_UPDATE_LAMBDA_CONFIG = "can_update_lambda_config"  # role change or malicious layer
     CAN_MODIFY_TRUST = "can_modify_trust"
+    CAN_CREATE_LOGIN_PROFILE = "can_create_login_profile"
+    CAN_UPDATE_LOGIN_PROFILE = "can_update_login_profile"
+    CAN_ADD_USER_TO_GROUP = "can_add_user_to_group"
+    CAN_CREATE_POLICY_VERSION = "can_create_policy_version"
+    CAN_SET_DEFAULT_POLICY_VERSION = "can_set_default_policy_version"
+    CAN_DELETE_OR_DETACH_POLICY = "can_delete_or_detach_policy"
+    CAN_DELETE_PERMISSIONS_BOUNDARY = "can_delete_permissions_boundary"
+    CAN_PUT_PERMISSIONS_BOUNDARY = "can_put_permissions_boundary"
+    CAN_PASSROLE_EC2 = "can_passrole_ec2"       # PassRole + ec2:RunInstances
+    CAN_PASSROLE_ECS = "can_passrole_ecs"      # PassRole + ecs:RunTask
+    CAN_PASSROLE_CLOUDFORMATION = "can_passrole_cloudformation"
+    CAN_PASSROLE_GLUE = "can_passrole_glue"
+    CAN_PASSROLE_AUTOSCALING = "can_passrole_autoscaling"
+    CAN_UPDATE_GLUE_DEV_ENDPOINT = "can_update_glue_dev_endpoint"
+    CAN_OBTAIN_CREDS_VIA_COGNITO_IDENTITY_POOL = "can_obtain_creds_via_cognito_identity_pool"
+
+    # Persistence edges
+    CAN_CREATE_EVENTBRIDGE_RULE = "can_create_eventbridge_rule"  # schedule/event-triggered automation
+    CAN_GET_FEDERATION_TOKEN = "can_get_federation_token"  # survive access key deletion
+    CAN_CREATE_CODEBUILD_GITHUB_RUNNER = "can_create_codebuild_github_runner"  # CodeBuild + attacker repo
+    CAN_CREATE_ROGUE_OIDC_PERSISTENCE = "can_create_rogue_oidc_persistence"  # attacker OIDC IdP + role backdoor
+    CAN_CREATE_ROLES_ANYWHERE_PERSISTENCE = "can_create_roles_anywhere_persistence"  # trust anchor + cert
+    CAN_MODIFY_S3_ACL_PERSISTENCE = "can_modify_s3_acl_persistence"  # PutBucketAcl/PutObjectAcl backdoor
+
+    # Defense evasion (GuardDuty / detection degradation)
+    CAN_MODIFY_GUARDDUTY_DETECTOR = "can_modify_guardduty_detector"
+    CAN_MODIFY_GUARDDUTY_IP_TRUST_LIST = "can_modify_guardduty_ip_trust_list"
+    CAN_MODIFY_GUARDDUTY_EVENT_RULES = "can_modify_guardduty_event_rules"
+    CAN_CREATE_GUARDDUTY_SUPPRESSION = "can_create_guardduty_suppression"
+    CAN_DELETE_GUARDDUTY_PUBLISHING_DEST = "can_delete_guardduty_publishing_dest"
+
+    # Defense evasion (CloudTrail / logging degradation)
+    CAN_STOP_CLOUDTRAIL = "can_stop_cloudtrail"
+    CAN_DELETE_CLOUDTRAIL = "can_delete_cloudtrail"
+    CAN_UPDATE_CLOUDTRAIL_CONFIG = "can_update_cloudtrail_config"
+    CAN_MODIFY_CLOUDTRAIL_BUCKET_LIFECYCLE = "can_modify_cloudtrail_bucket_lifecycle"
 
     # Credential chain
     CREDENTIAL_FOR = "credential_for"      # credential -> identity

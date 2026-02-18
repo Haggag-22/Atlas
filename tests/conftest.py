@@ -198,6 +198,31 @@ def sample_graph() -> EnvironmentGraph:
 
 
 @pytest.fixture
+def sample_graph_with_lambda(sample_graph) -> EnvironmentGraph:
+    """Extend sample_graph with a Lambda function that has an execution role."""
+    g = sample_graph
+
+    g.add_node(
+        "arn:aws:lambda:us-east-1:123456789012:function:test-func",
+        NodeType.LAMBDA_FUNCTION,
+        data={
+            "function_name": "test-func",
+            "arn": "arn:aws:lambda:us-east-1:123456789012:function:test-func",
+            "region": "us-east-1",
+            "runtime": "python3.12",
+            "role_arn": "arn:aws:iam::123456789012:role/lambda-exec-role",
+            "handler": "index.handler",
+            "environment_variables": {},
+            "layers": [],
+            "resource_policy": None,
+        },
+        label="test-func",
+    )
+
+    return g
+
+
+@pytest.fixture
 def sample_graph_with_ec2(sample_graph) -> EnvironmentGraph:
     """Extend sample_graph with an EC2 instance that has IMDSv1 + instance profile."""
     g = sample_graph

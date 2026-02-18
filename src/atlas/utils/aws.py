@@ -14,6 +14,7 @@ from typing import Any
 
 import aioboto3
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError, NoCredentialsError
 
 import structlog
@@ -21,6 +22,42 @@ import structlog
 from atlas.core.config import AWSConfig
 
 logger = structlog.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# User agent — identify Atlas in CloudTrail / request logs
+# ---------------------------------------------------------------------------
+def _get_atlas_user_agent() -> str:
+    """Return Atlas user agent string for API requests."""
+    try:
+        from importlib.metadata import version
+        v = version("atlas-redteam")
+        return f"Atlas/{v}"
+    except Exception:
+        return "Atlas/2.0.0"
+
+
+def _apply_atlas_user_agent(
+    session: boto3.Session | aioboto3.Session,
+    user_agent_extra: str | None = None,
+) -> None:
+    """Set user agent on session so all clients use it.
+
+    Args:
+        session: boto3 or aioboto3 session
+        user_agent_extra: Override from config. None = use Atlas default;
+            '' = stealth mode (no extra, avoid GuardDuty Pentest findings);
+            non-empty = use as-is.
+    """
+    if user_agent_extra is not None and user_agent_extra == "":
+        # Stealth mode: don't add Atlas identifier (avoids GuardDuty Pentest
+        # findings for tool signatures; see hackingthe.cloud/guardduty-pentest)
+        return
+    extra = user_agent_extra if user_agent_extra is not None else _get_atlas_user_agent()
+    botocore_session = getattr(session, "_session", None)
+    if botocore_session and hasattr(botocore_session, "set_default_client_config"):
+        config = Config(user_agent_extra=extra)
+        botocore_session.set_default_client_config(config)
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +75,9 @@ def create_sync_session(config: AWSConfig) -> boto3.Session:
         kwargs["aws_secret_access_key"] = config.secret_access_key
         if config.session_token:
             kwargs["aws_session_token"] = config.session_token
-    return boto3.Session(**kwargs)
+    session = boto3.Session(**kwargs)
+    _apply_atlas_user_agent(session, getattr(config, "user_agent_extra", None))
+    return session
 
 
 def create_async_session(config: AWSConfig) -> aioboto3.Session:
@@ -53,7 +92,9 @@ def create_async_session(config: AWSConfig) -> aioboto3.Session:
         kwargs["aws_secret_access_key"] = config.secret_access_key
         if config.session_token:
             kwargs["aws_session_token"] = config.session_token
-    return aioboto3.Session(**kwargs)
+    session = aioboto3.Session(**kwargs)
+    _apply_atlas_user_agent(session, getattr(config, "user_agent_extra", None))
+    return session
 
 
 # ---------------------------------------------------------------------------

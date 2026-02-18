@@ -47,6 +47,15 @@ class AttackPathExplainer:
         "can_enum_backup": "Backup Service Enumeration",
         "can_decode_key": "Access Key Account Decode",
         "can_loot_snapshot": "Public EBS Snapshot Loot",
+        "can_stop_cloudtrail": "CloudTrail Stop Logging Evasion",
+        "can_delete_cloudtrail": "CloudTrail Delete Trail Evasion",
+        "can_update_cloudtrail_config": "CloudTrail Config Update Evasion",
+        "can_modify_cloudtrail_bucket_lifecycle": "CloudTrail Bucket Lifecycle Evasion",
+        "can_get_federation_token": "GetFederationToken Persistence",
+        "can_create_codebuild_github_runner": "CodeBuild GitHub Runner Persistence",
+        "can_create_rogue_oidc_persistence": "Rogue OIDC IdP Persistence",
+        "can_create_roles_anywhere_persistence": "IAM Roles Anywhere Persistence",
+        "can_modify_s3_acl_persistence": "S3 ACL Persistence",
     }
 
     def __init__(self) -> None:

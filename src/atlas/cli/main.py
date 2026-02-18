@@ -633,11 +633,14 @@ def _get_aws_profiles(
 def _validate_profile(profile: str, region: str) -> None:
     """Validate an AWS profile by calling STS GetCallerIdentity."""
     try:
-        import boto3
-        kwargs: dict[str, str] = {"region_name": region}
-        if profile and profile != "default":
-            kwargs["profile_name"] = profile
-        session = boto3.Session(**kwargs)
+        from atlas.core.config import AWSConfig
+        from atlas.utils.aws import create_sync_session
+
+        config = AWSConfig(
+            profile=profile if (profile and profile != "default") else None,
+            region=region,
+        )
+        session = create_sync_session(config)
         sts = session.client("sts")
         identity = sts.get_caller_identity()
 
@@ -1468,6 +1471,14 @@ _ACTION_NAMES: dict[str, str] = {
     "can_ssm_session": "SSM Session / Command",
     "can_snapshot_volume": "EC2 Volume Snapshot Loot",
     "can_modify_userdata": "EC2 UserData Injection",
+    "can_steal_lambda_creds": "Lambda Credential Theft",
+    "can_steal_ecs_task_creds": "ECS Task Role Compromise",
+    "can_access_via_resource_policy": "Resource Policy Misconfiguration",
+    "can_get_federation_token": "GetFederationToken Persistence",
+    "can_create_codebuild_github_runner": "CodeBuild GitHub Runner Persistence",
+    "can_create_rogue_oidc_persistence": "Rogue OIDC IdP Persistence",
+    "can_create_roles_anywhere_persistence": "IAM Roles Anywhere Persistence",
+    "can_modify_s3_acl_persistence": "S3 ACL Persistence",
     "assume_role": "Assume Role",
     "create_access_key": "Create Access Key",
     "attach_policy": "Attach Policy",
@@ -1484,7 +1495,15 @@ _ACTION_NAMES: dict[str, str] = {
     "ssm_session": "SSM Session / Command",
     "snapshot_volume_loot": "Snapshot Volume Loot",
     "inject_userdata": "Inject EC2 UserData",
+    "steal_lambda_credentials": "Steal Lambda Credentials",
+    "steal_ecs_task_credentials": "Steal ECS Task Credentials",
+    "access_via_resource_policy": "Access via Resource Policy",
     "write_s3": "Write S3 Bucket",
+    "get_federation_token": "GetFederationToken Persistence",
+    "codebuild_github_runner_persistence": "CodeBuild GitHub Runner Persistence",
+    "rogue_oidc_persistence": "Rogue OIDC IdP Persistence",
+    "roles_anywhere_persistence": "IAM Roles Anywhere Persistence",
+    "s3_acl_persistence": "S3 ACL Persistence",
 }
 
 
@@ -1938,6 +1957,9 @@ _EDGE_TO_ACTION: dict[str, str] = {
     "can_ssm_session": "ssm_session",
     "can_snapshot_volume": "snapshot_volume_loot",
     "can_modify_userdata": "inject_userdata",
+    "can_steal_lambda_creds": "steal_lambda_credentials",
+    "can_steal_ecs_task_creds": "steal_ecs_task_credentials",
+    "can_access_via_resource_policy": "access_via_resource_policy",
     "can_enum_backup": "enum_backup",
     "can_decode_key": "decode_key_account",
     "can_loot_snapshot": "loot_public_snapshot",

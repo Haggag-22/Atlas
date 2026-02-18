@@ -20,8 +20,13 @@ import structlog
 
 from atlas.core.models import (
     CloudFormationStack,
+    CloudFrontDistribution,
+    CognitoIdentityPool,
+    CognitoUserPool,
     EBSSnapshot,
     EC2Instance,
+    ECRRepository,
+    ECSTaskDefinition,
     KMSKey,
     LambdaFunction,
     RDSInstance,
@@ -63,6 +68,11 @@ class ResourceCollector(BaseCollector):
             "ssm_parameters": 0,
             "cloudformation_stacks": 0,
             "ebs_public_snapshots": 0,
+            "ecs_task_definitions": 0,
+            "ecr_repositories": 0,
+            "cognito_user_pools": 0,
+            "cognito_identity_pools": 0,
+            "cloudfront_distributions": 0,
             "skipped_no_permission": 0,
         }
         resource_types = self._config.recon.resource_types
@@ -119,6 +129,40 @@ class ResourceCollector(BaseCollector):
             stats["ebs_public_snapshots"] = await self._collect_public_ebs_snapshots(account_id, region)
         elif "ebs" in resource_types:
             logger.info("resource_skipped", service="ebs", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "ecs" in resource_types and self._caller_has("ecs:ListTaskDefinitions"):
+            stats["ecs_task_definitions"] = await self._collect_ecs(account_id, region)
+        elif "ecs" in resource_types:
+            logger.info("resource_skipped", service="ecs", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "ecr" in resource_types and self._caller_has("ecr:DescribeRepositories"):
+            stats["ecr_repositories"] = await self._collect_ecr(account_id, region)
+        elif "ecr" in resource_types:
+            logger.info("resource_skipped", service="ecr", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "cognito" in resource_types and self._caller_has("cognito-idp:ListUserPools"):
+            stats["cognito_user_pools"] = await self._collect_cognito(account_id, region)
+        if "cognito" in resource_types and self._caller_has("cognito-identity:ListIdentityPools"):
+            stats["cognito_identity_pools"] = await self._collect_cognito_identity_pools(
+                account_id, region
+            )
+        if (
+            "cognito" in resource_types
+            and not self._caller_has("cognito-idp:ListUserPools")
+            and not self._caller_has("cognito-identity:ListIdentityPools")
+        ):
+            logger.info("resource_skipped", service="cognito", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "cloudfront" in resource_types and region == "us-east-1" and self._caller_has("cloudfront:ListDistributions"):
+            stats["cloudfront_distributions"] = await self._collect_cloudfront(account_id, region)
+        elif "cloudfront" in resource_types and region != "us-east-1":
+            pass  # CloudFront is global; only collect in us-east-1
+        elif "cloudfront" in resource_types:
+            logger.info("resource_skipped", service="cloudfront", reason="no permission")
             stats["skipped_no_permission"] += 1
 
         logger.info("resource_collection_complete", **stats)
@@ -312,6 +356,308 @@ class ResourceCollector(BaseCollector):
                     data=function.model_dump(), label=func_name,
                 )
                 count += 1
+
+        return count
+
+    # ------------------------------------------------------------------
+    # ECS
+    # ------------------------------------------------------------------
+    async def _collect_ecs(self, account_id: str, region: str) -> int:
+        """Collect ECS task definitions with task roles (credential theft vector)."""
+        count = 0
+        async with self._session.client("ecs", region_name=region) as ecs:
+            raw_tds = await async_paginate(
+                ecs, "list_task_definitions", "taskDefinitionArns",
+            )
+            self._record(
+                "ecs:ListTaskDefinitions",
+                detection_cost=get_detection_score("ecs:ListTaskDefinitions"),
+            )
+
+            seen: set[str] = set()
+            for td_arn in raw_tds or []:
+                if td_arn in seen:
+                    continue
+                seen.add(td_arn)
+
+                desc = await safe_api_call(
+                    ecs.describe_task_definition(taskDefinition=td_arn),
+                    default=None,
+                )
+                self._record(
+                    "ecs:DescribeTaskDefinition",
+                    target_arn=td_arn,
+                    detection_cost=get_detection_score("ecs:DescribeTaskDefinition"),
+                )
+                if not desc:
+                    continue
+
+                td = desc.get("taskDefinition", {})
+                task_role = td.get("taskRoleArn")
+                exec_role = td.get("executionRoleArn")
+                if not task_role:
+                    continue
+
+                family = td.get("family", td_arn.split("/")[-1].rsplit(":", 1)[0])
+                compat = td.get("requiresCompatibilities") or []
+                launch_type = "FARGATE" if "FARGATE" in compat else "EC2"
+
+                task_def = ECSTaskDefinition(
+                    family=family,
+                    arn=td_arn,
+                    region=region,
+                    task_role_arn=task_role,
+                    execution_role_arn=exec_role,
+                    network_mode=td.get("networkMode", "bridge"),
+                    launch_type=launch_type,
+                )
+
+                self._graph.add_node(
+                    td_arn, NodeType.ECS_TASK_DEFINITION,
+                    data=task_def.model_dump(), label=family,
+                )
+                count += 1
+
+        return count
+
+    # ------------------------------------------------------------------
+    # ECR
+    # ------------------------------------------------------------------
+    async def _collect_ecr(self, account_id: str, region: str) -> int:
+        """Collect ECR repositories with resource policies (misconfig vector)."""
+        count = 0
+        async with self._session.client("ecr", region_name=region) as ecr:
+            raw_repos = await async_paginate(
+                ecr, "describe_repositories", "repositories",
+            )
+            self._record(
+                "ecr:DescribeRepositories",
+                detection_cost=get_detection_score("ecr:DescribeRepositories"),
+            )
+
+            for raw in raw_repos or []:
+                repo_name = raw["repositoryName"]
+                repo_arn = raw["repositoryArn"]
+                repo_uri = raw.get("repositoryUri", "")
+
+                policy_resp = await safe_api_call(
+                    ecr.get_repository_policy(repositoryName=repo_name),
+                    default=None,
+                )
+                self._record(
+                    "ecr:GetRepositoryPolicy",
+                    target_arn=repo_arn,
+                    detection_cost=get_detection_score("ecr:GetRepositoryPolicy"),
+                )
+                resource_policy = None
+                if policy_resp:
+                    try:
+                        resource_policy = json.loads(
+                            policy_resp.get("policy", "{}"),
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                repo = ECRRepository(
+                    repository_name=repo_name,
+                    arn=repo_arn,
+                    region=region,
+                    repository_uri=repo_uri,
+                    resource_policy=resource_policy,
+                    image_tag_mutability=raw.get("imageTagMutability", "MUTABLE"),
+                )
+
+                self._graph.add_node(
+                    repo_arn, NodeType.ECR_REPOSITORY,
+                    data=repo.model_dump(), label=repo_name,
+                )
+                count += 1
+
+        return count
+
+    # ------------------------------------------------------------------
+    # Cognito
+    # ------------------------------------------------------------------
+    async def _collect_cognito(self, account_id: str, region: str) -> int:
+        """Collect Cognito User Pools (self-signup misconfig vector)."""
+        count = 0
+        async with self._session.client("cognito-idp", region_name=region) as cognito:
+            raw_pools = await async_paginate(
+                cognito, "list_user_pools", "UserPools",
+                MaxResults=60,
+            )
+            self._record(
+                "cognito-idp:ListUserPools",
+                detection_cost=get_detection_score("cognito-idp:ListUserPools"),
+            )
+
+            for raw in raw_pools or []:
+                pool_id = raw["Id"]
+                pool_name = raw.get("Name", "")
+
+                desc = await safe_api_call(
+                    cognito.describe_user_pool(UserPoolId=pool_id),
+                    default=None,
+                )
+                self._record(
+                    "cognito-idp:DescribeUserPool",
+                    target_arn=f"arn:aws:cognito-idp:{region}:{account_id}:userpool/{pool_id}",
+                    detection_cost=get_detection_score("cognito-idp:DescribeUserPool"),
+                )
+                if not desc:
+                    continue
+
+                pool = desc.get("UserPool", {})
+                admin_config = pool.get("AdminCreateUserConfig", {})
+
+                user_pool = CognitoUserPool(
+                    pool_id=pool_id,
+                    arn=f"arn:aws:cognito-idp:{region}:{account_id}:userpool/{pool_id}",
+                    region=region,
+                    name=pool.get("Name", pool_name),
+                    admin_create_user_config=admin_config,
+                    auto_verified_attributes=pool.get("AutoVerifiedAttributes", []),
+                )
+
+                self._graph.add_node(
+                    user_pool.arn, NodeType.COGNITO_USER_POOL,
+                    data=user_pool.model_dump(), label=pool.get("Name", pool_id),
+                )
+                count += 1
+
+        return count
+
+    # ------------------------------------------------------------------
+    # Cognito Identity Pools (federation -> temp AWS creds)
+    # ------------------------------------------------------------------
+    async def _collect_cognito_identity_pools(
+        self, account_id: str, region: str
+    ) -> int:
+        """Collect Cognito Identity Pools and their IAM role mappings.
+
+        Overpermissioned identity pools issue temp creds with excessive
+        IAM permissions. Attack: authenticate (self-signup/creds) -> get
+        ID token -> exchange for identity pool creds -> abuse role.
+        """
+        count = 0
+        async with self._session.client(
+            "cognito-identity", region_name=region
+        ) as cognito_id:
+            raw_pools = await async_paginate(
+                cognito_id, "list_identity_pools", "IdentityPools",
+                MaxResults=60,
+            )
+            self._record(
+                "cognito-identity:ListIdentityPools",
+                detection_cost=get_detection_score(
+                    "cognito-identity:ListIdentityPools"
+                ),
+            )
+
+            for raw in raw_pools or []:
+                pool_id = raw.get("IdentityPoolId")
+                pool_name = raw.get("IdentityPoolName", "")
+
+                roles_resp = await safe_api_call(
+                    cognito_id.get_identity_pool_roles(
+                        IdentityPoolId=pool_id,
+                    ),
+                    default=None,
+                )
+                self._record(
+                    "cognito-identity:GetIdentityPoolRoles",
+                    target_arn=f"arn:aws:cognito-identity:{region}:{account_id}:identitypool/{pool_id}",
+                    detection_cost=get_detection_score(
+                        "cognito-identity:GetIdentityPoolRoles"
+                    ),
+                )
+                if not roles_resp:
+                    continue
+
+                roles = roles_resp.get("Roles", {})
+                allow_unauth = "unauthenticated" in roles
+
+                identity_pool = CognitoIdentityPool(
+                    identity_pool_id=pool_id,
+                    arn=f"arn:aws:cognito-identity:{region}:{account_id}:identitypool/{pool_id}",
+                    region=region,
+                    identity_pool_name=pool_name,
+                    roles=roles,
+                    allow_unauthenticated=allow_unauth,
+                )
+
+                self._graph.add_node(
+                    identity_pool.arn,
+                    NodeType.COGNITO_IDENTITY_POOL,
+                    data=identity_pool.model_dump(),
+                    label=pool_name or pool_id,
+                )
+                count += 1
+
+        return count
+
+    # ------------------------------------------------------------------
+    # CloudFront (for S3 origin takeover detection)
+    # ------------------------------------------------------------------
+    async def _collect_cloudfront(self, account_id: str, region: str) -> int:
+        """Collect CloudFront distributions; flag orphaned S3 origins."""
+        count = 0
+        # CloudFront is global; use us-east-1
+        cf_region = "us-east-1"
+        async with self._session.client(
+            "cloudfront", region_name=cf_region
+        ) as cloudfront:
+            raw_list = await safe_api_call(
+                cloudfront.list_distributions(), default={"DistributionList": {}},
+            )
+            self._record(
+                "cloudfront:ListDistributions",
+                detection_cost=get_detection_score("cloudfront:ListDistributions"),
+            )
+
+            items = (raw_list or {}).get("DistributionList", {}).get("Items", [])
+            for raw in items:
+                dist_id = raw.get("Id")
+                if not dist_id:
+                    continue
+
+                desc = await safe_api_call(
+                    cloudfront.get_distribution(Id=dist_id),
+                    default=None,
+                )
+                self._record(
+                    "cloudfront:GetDistribution",
+                    detection_cost=get_detection_score("cloudfront:GetDistribution"),
+                )
+                if not desc:
+                    continue
+
+                dist = desc.get("Distribution", {})
+                origins = dist.get("Origins", {}).get("Items", [])
+
+                for origin in origins:
+                    domain = origin.get("DomainName", "")
+                    if not domain:
+                        continue
+                    # S3 origin: bucket.s3.amazonaws.com or bucket.s3-website.region.amazonaws.com
+                    if ".s3." in domain and "amazonaws.com" in domain:
+                        bucket_name = domain.split(".s3.")[0].split(".")[-1]
+                        if bucket_name:
+                            cf_dist = CloudFrontDistribution(
+                                distribution_id=dist_id,
+                                arn=f"arn:aws:cloudfront::{account_id}:distribution/{dist_id}",
+                                origin_domain=domain,
+                                origin_bucket=bucket_name,
+                                aliases=dist.get("Aliases", {}).get("Items", []),
+                            )
+                            self._graph.add_node(
+                                cf_dist.arn,
+                                NodeType.CLOUDFRONT_DISTRIBUTION,
+                                data=cf_dist.model_dump(),
+                                label=f"cf-{dist_id}",
+                            )
+                            count += 1
+                            break
 
         return count
 
