@@ -39,6 +39,7 @@ class AttackPathExplainer:
         "can_attach_policy": "Policy Attachment",
         "can_put_policy": "Inline Policy Injection",
         "can_passrole": "PassRole Abuse",
+        "can_passrole_agentcore": "AgentCore Role Confusion",
         "can_modify_trust": "Trust Policy Modification",
         "can_update_lambda": "Lambda Code Injection",
         "can_read_s3": "S3 Read Access",
@@ -51,11 +52,32 @@ class AttackPathExplainer:
         "can_delete_cloudtrail": "CloudTrail Delete Trail Evasion",
         "can_update_cloudtrail_config": "CloudTrail Config Update Evasion",
         "can_modify_cloudtrail_bucket_lifecycle": "CloudTrail Bucket Lifecycle Evasion",
+        "can_modify_cloudtrail_event_selectors": "CloudTrail Event Selectors Evasion",
+        "can_create_admin_user": "Create Admin User",
+        "can_create_backdoor_role": "Create Backdoor Role",
+        "can_backdoor_lambda": "Lambda Resource Policy Backdoor",
+        "can_get_ec2_password_data": "EC2 Get Password Data",
+        "can_ec2_instance_connect": "EC2 Instance Connect",
+        "can_ec2_serial_console_ssh": "EC2 Serial Console SSH",
+        "can_open_security_group_ingress": "Open Security Group Port 22",
+        "can_share_ami": "Share AMI",
+        "can_share_ebs_snapshot": "Share EBS Snapshot",
+        "can_share_rds_snapshot": "Share RDS Snapshot",
+        "can_invoke_bedrock_model": "Bedrock InvokeModel",
+        "can_delete_dns_logs": "Delete DNS Query Logs",
+        "can_leave_organization": "Leave Organization",
+        "can_remove_vpc_flow_logs": "Remove VPC Flow Logs",
+        "can_enumerate_ses": "Enumerate SES",
+        "can_modify_sagemaker_lifecycle": "SageMaker Lifecycle Config",
+        "can_create_eks_access_entry": "EKS Create Access Entry",
         "can_get_federation_token": "GetFederationToken Persistence",
         "can_create_codebuild_github_runner": "CodeBuild GitHub Runner Persistence",
         "can_create_rogue_oidc_persistence": "Rogue OIDC IdP Persistence",
         "can_create_roles_anywhere_persistence": "IAM Roles Anywhere Persistence",
         "can_modify_s3_acl_persistence": "S3 ACL Persistence",
+        "can_read_codebuild_env": "CodeBuild Env Credential Theft",
+        "can_read_beanstalk_env": "Beanstalk Env Credential Theft",
+        "can_hijack_bedrock_agent": "Bedrock Agent Hijacking",
     }
 
     def __init__(self) -> None:
@@ -312,6 +334,34 @@ class AttackPathExplainer:
                 "Impact:\n"
                 "  Indirect access to {target}'s permissions via a service.\n"
                 "  The attacker controls what code runs under those permissions."
+            ),
+            "can_passrole_agentcore": (
+                "AGENTCORE ROLE CONFUSION ATTACK (CloudGoat)\n"
+                "\n"
+                "How it works:\n"
+                "  The attacker ({source}) can pass role {target} to Bedrock\n"
+                "  AgentCore when creating a Code Interpreter. Both the code\n"
+                "  interpreter role and agent runtime role trust bedrock-agentcore.\n"
+                "  By passing the agent runtime role (instead of interpreter role),\n"
+                "  the attacker gains access to Knowledge Base, S3, and foundation\n"
+                "  models that the runtime role has permissions for.\n"
+                "\n"
+                "Execution:\n"
+                "  1. Enumerate IAM roles that trust bedrock-agentcore.amazonaws.com\n"
+                "  2. Create a Code Interpreter with the agent runtime role\n"
+                "     (bedrock-agentcore:CreateCodeInterpreter + iam:PassRole)\n"
+                "  3. Start a session (bedrock-agentcore:StartCodeInterpreterSession)\n"
+                "  4. Invoke code (bedrock-agentcore:InvokeCodeInterpreter) to run\n"
+                "     commands as the role — access S3, Knowledge Base, etc.\n"
+                "\n"
+                "Detection:\n"
+                "  - CreateCodeInterpreter + PassRole is HIGH visibility\n"
+                "  - InvokeCodeInterpreter execution is logged in CloudTrail\n"
+                "  - Unusual AgentCore usage may trigger GuardDuty\n"
+                "\n"
+                "Impact:\n"
+                "  Indirect code execution with {target}'s permissions.\n"
+                "  Access to Bedrock Knowledge Base, S3 buckets, and foundation models."
             ),
             "can_modify_trust": (
                 "TRUST POLICY MODIFICATION ATTACK\n"

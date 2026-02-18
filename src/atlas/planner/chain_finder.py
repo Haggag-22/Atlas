@@ -35,7 +35,10 @@ _PIVOT_TYPES = {
     "can_update_login_profile",  # change password for privileged user
     "can_steal_imds_creds",  # IMDS theft gives you the role's credentials
     "can_ssm_session",       # SSM session gives shell + IMDS access to role
+    "can_ec2_instance_connect",  # EC2 Instance Connect — SSH access
+    "can_ec2_serial_console_ssh",  # EC2 Serial Console — serial access
     "can_steal_lambda_creds",  # Lambda env vars /proc/self/environ
+    "can_read_codebuild_env",  # CodeBuild env vars (CloudGoat codebuild_secrets)
     "can_steal_ecs_task_creds",  # ECS container metadata 169.254.170.2
     "can_assume_via_oidc_misconfig",  # OIDC trust abuse -> become role
     "can_obtain_creds_via_cognito_identity_pool",  # identity pool -> temp creds
@@ -47,9 +50,14 @@ _ESCALATION_TYPES = {
     "can_attach_policy", "can_put_policy", "can_modify_trust",
     "can_passrole", "can_update_lambda", "can_modify_userdata",
     "can_passrole_ec2", "can_passrole_ecs", "can_passrole_cloudformation",
-    "can_passrole_glue", "can_passrole_autoscaling",
+    "can_passrole_glue", "can_passrole_autoscaling", "can_passrole_agentcore",
     "can_update_lambda_config",
+    "can_backdoor_lambda",
+    "can_modify_sagemaker_lifecycle", "can_create_eks_access_entry",
+    "can_hijack_bedrock_agent",  # Update Lambda + InvokeAgent (CloudGoat bedrock_agent_hijacking)
     "can_add_user_to_group",
+    "can_create_admin_user",
+    "can_create_backdoor_role",
     "can_create_policy_version", "can_set_default_policy_version",
     "can_delete_or_detach_policy", "can_delete_permissions_boundary",
     "can_put_permissions_boundary",
@@ -63,6 +71,10 @@ _ESCALATION_TYPES = {
 # Edge types that are terminal (resource access, not identity pivot)
 _TERMINAL_TYPES = {
     "can_read_s3", "can_write_s3",
+    "can_get_ec2_password_data", "can_enumerate_ses",
+    "can_share_ami", "can_share_ebs_snapshot", "can_share_rds_snapshot",
+    "can_invoke_bedrock_model", "can_open_security_group_ingress",
+    "can_read_beanstalk_env",  # read Beanstalk config (CloudGoat beanstalk_secrets)
     "can_modify_s3_acl_persistence",  # S3 ACL backdoor is terminal
     "can_snapshot_volume",  # volume loot is a terminal action
     "can_access_via_resource_policy",  # access via misconfigured policy
@@ -81,6 +93,9 @@ _EVASION_TYPES = {
     "can_delete_cloudtrail",
     "can_update_cloudtrail_config",
     "can_modify_cloudtrail_bucket_lifecycle",
+    "can_modify_cloudtrail_event_selectors",
+    "can_delete_dns_logs", "can_leave_organization",
+    "can_remove_vpc_flow_logs",
 }
 
 

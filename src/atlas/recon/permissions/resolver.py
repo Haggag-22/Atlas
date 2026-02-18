@@ -1290,6 +1290,7 @@ class PermissionResolverCollector(BaseCollector):
         "lambda:GetPolicy",
         # Secrets Manager
         "secretsmanager:ListSecrets", "secretsmanager:GetSecretValue",
+        "secretsmanager:BatchGetSecretValue",
         "secretsmanager:CreateSecret", "secretsmanager:PutSecretValue",
         # SSM
         "ssm:GetParameter", "ssm:GetParameters",
@@ -1306,7 +1307,8 @@ class PermissionResolverCollector(BaseCollector):
         "rds:CreateDBSnapshot", "rds:ModifyDBSnapshotAttribute",
         # CloudTrail
         "cloudtrail:DescribeTrails", "cloudtrail:StopLogging",
-        "cloudtrail:DeleteTrail", "cloudtrail:LookupEvents",
+        "cloudtrail:DeleteTrail", "cloudtrail:PutEventSelectors",
+        "cloudtrail:LookupEvents",
         # GuardDuty
         "guardduty:ListDetectors", "guardduty:DeleteDetector",
         # Organizations
@@ -1327,6 +1329,25 @@ class PermissionResolverCollector(BaseCollector):
         "ecr:DescribeRepositories", "ecr:GetAuthorizationToken",
         # Glue
         "glue:GetDatabases", "glue:GetConnections",
+        # CodeBuild / Elastic Beanstalk (CloudGoat)
+        "codebuild:ListProjects", "codebuild:BatchGetProjects",
+        "elasticbeanstalk:DescribeEnvironments",
+        "elasticbeanstalk:DescribeConfigurationSettings",
+        # Bedrock (CloudGoat bedrock_agent_hijacking)
+        "bedrock:ListAgents", "bedrock:InvokeAgent",
+        "bedrock:ListAgentActionGroups", "bedrock:GetAgentActionGroup",
+        # Bedrock AgentCore
+        "bedrock-agentcore:CreateCodeInterpreter",
+        "bedrock-agentcore:StartCodeInterpreterSession",
+        "bedrock-agentcore:InvokeCodeInterpreter",
+        # Stratus techniques
+        "ec2:GetPasswordData", "ec2:ModifyImageAttribute", "ec2:DeleteFlowLogs",
+        "ec2-instance-connect:SendSSHPublicKey",
+        "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+        "route53resolver:DeleteResolverQueryLogConfig",
+        "organizations:LeaveOrganization", "ses:ListIdentities",
+        "sagemaker:UpdateNotebookInstanceLifecycleConfig",
+        "bedrock:InvokeModel", "eks:CreateAccessEntry",
         # Redshift
         "redshift:DescribeClusters",
         # ElastiCache
@@ -1352,6 +1373,9 @@ class PermissionResolverCollector(BaseCollector):
             f"arn:aws:lambda:*:*:function:*",
         ],
         "secretsmanager:GetSecretValue": [
+            "arn:aws:secretsmanager:*:*:secret:*",
+        ],
+        "secretsmanager:BatchGetSecretValue": [
             "arn:aws:secretsmanager:*:*:secret:*",
         ],
         "kms:Decrypt": ["arn:aws:kms:*:*:key/*"],
@@ -2390,6 +2414,7 @@ class PermissionResolverCollector(BaseCollector):
             1,
             [
                 "secretsmanager:GetSecretValue",
+                "secretsmanager:BatchGetSecretValue",
                 "secretsmanager:DescribeSecret",
             ],
         ),

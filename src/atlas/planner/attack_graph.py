@@ -111,6 +111,7 @@ class AttackGraph:
             "can_passrole_cloudformation": "PassRole + CloudFormation",
             "can_passrole_glue": "PassRole + Glue",
             "can_passrole_autoscaling": "PassRole + AutoScaling",
+            "can_passrole_agentcore": "AgentCore Role Confusion",
             "can_modify_trust": "Trust Policy Modification",
             "can_update_lambda": "Lambda Code Injection",
             "can_update_lambda_config": "Lambda Config/Layer Update",
@@ -139,6 +140,24 @@ class AttackGraph:
             "can_delete_cloudtrail": "CloudTrail Delete Trail Evasion",
             "can_update_cloudtrail_config": "CloudTrail Config Update Evasion",
             "can_modify_cloudtrail_bucket_lifecycle": "CloudTrail Bucket Lifecycle Evasion",
+            "can_modify_cloudtrail_event_selectors": "CloudTrail Event Selectors Evasion",
+            "can_get_ec2_password_data": "EC2 Get Password Data",
+            "can_ec2_instance_connect": "EC2 Instance Connect",
+            "can_ec2_serial_console_ssh": "EC2 Serial Console SSH",
+            "can_open_security_group_ingress": "Open Security Group Port 22",
+            "can_share_ami": "Share AMI",
+            "can_share_ebs_snapshot": "Share EBS Snapshot",
+            "can_share_rds_snapshot": "Share RDS Snapshot",
+            "can_invoke_bedrock_model": "Bedrock InvokeModel",
+            "can_delete_dns_logs": "Delete DNS Query Logs",
+            "can_leave_organization": "Leave Organization",
+            "can_remove_vpc_flow_logs": "Remove VPC Flow Logs",
+            "can_enumerate_ses": "Enumerate SES",
+            "can_modify_sagemaker_lifecycle": "SageMaker Lifecycle Config",
+            "can_create_eks_access_entry": "EKS Create Access Entry",
+            "can_create_admin_user": "Create Admin User",
+            "can_create_backdoor_role": "Create Backdoor Role",
+            "can_backdoor_lambda": "Lambda Resource Policy Backdoor",
             "can_read_s3": "S3 Read Access",
             "can_write_s3": "S3 Write Access",
             "can_read_userdata": "EC2 User Data Disclosure",
@@ -151,6 +170,9 @@ class AttackGraph:
             "can_modify_userdata": "EC2 UserData Injection",
             "can_steal_lambda_creds": "Lambda Credential Theft",
             "can_steal_ecs_task_creds": "ECS Task Role Compromise",
+            "can_read_codebuild_env": "CodeBuild Env Credential Theft",
+            "can_read_beanstalk_env": "Beanstalk Env Credential Theft",
+            "can_hijack_bedrock_agent": "Bedrock Agent Hijacking",
             "can_access_via_resource_policy": "Resource Policy Misconfiguration",
             "can_assume_via_oidc_misconfig": "OIDC Trust Policy Abuse",
             "can_self_signup_cognito": "Cognito Self-Signup",
@@ -217,11 +239,15 @@ class AttackGraphBuilder:
         self._add_userdata_injection_edges(ag)
         self._add_lambda_credential_theft_edges(ag)
         self._add_ecs_task_credential_theft_edges(ag)
+        self._add_codebuild_env_theft_edges(ag)
+        self._add_beanstalk_env_theft_edges(ag)
+        self._add_bedrock_agent_hijacking_edges(ag)
         self._add_resource_policy_misconfig_edges(ag)
         self._add_oidc_trust_misconfig_edges(ag)
         self._add_cognito_self_signup_edges(ag)
         self._add_cloudfront_takeover_edges(ag)
         self._add_passrole_expanded_edges(ag)
+        self._add_agentcore_role_confusion_edges(ag)
         self._add_lambda_config_update_edges(ag)
         self._add_cognito_identity_pool_edges(ag)
         self._add_iam_privesc_edges(ag)
@@ -229,6 +255,7 @@ class AttackGraphBuilder:
         self._add_post_exploitation_persistence_edges(ag)
         self._add_guardduty_evasion_edges(ag)
         self._add_cloudtrail_evasion_edges(ag)
+        self._add_stratus_technique_edges(ag)
 
         logger.info("attack_graph_built", **ag.summary())
         return ag
@@ -2086,6 +2113,178 @@ class AttackGraphBuilder:
                 ))
 
     # ==================================================================
+    # ATTACK PATH 18b: CodeBuild Env Credential Theft (CloudGoat codebuild_secrets)
+    # ==================================================================
+    def _add_codebuild_env_theft_edges(self, ag: AttackGraph) -> None:
+        """Add edges for reading credentials from CodeBuild project env vars.
+
+        CloudGoat codebuild_secrets: env vars may contain AWS_ACCESS_KEY_ID,
+        AWS_SECRET_ACCESS_KEY for another principal. Use BatchGetProjects to
+        read; pivot to that principal. We target the project's service role
+        (known) and note env may contain additional creds.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        for proj_arn in self._env.nodes_of_type(NodeType.CODEBUILD_PROJECT):
+            proj_data = self._env.get_node_data(proj_arn)
+            role_arn = proj_data.get("service_role_arn")
+            proj_name = proj_data.get("project_name", proj_arn.split("/")[-1])
+            if not role_arn:
+                continue
+            if not self._env.has_node(role_arn):
+                parts = role_arn.split(":")
+                role_name = parts[-1].split("/")[-1] if len(parts) >= 6 else "unknown"
+                account_id = parts[4] if len(parts) >= 5 else ""
+                self._env.add_node(
+                    role_arn, NodeType.ROLE,
+                    data={"arn": role_arn, "role_name": role_name, "account_id": account_id},
+                    label=f"{role_name} (via CodeBuild)",
+                )
+            for source in identities:
+                if not self._identity_has_permission(source, "codebuild:BatchGetProjects"):
+                    continue
+                detection = self._scorer.score("codebuild:BatchGetProjects")
+                has_cred = proj_data.get("has_credential_like_env", False)
+                prob = 0.80 if has_cred else 0.60
+                notes = (
+                    f"CodeBuild project {proj_name} — BatchGetProjects reveals env vars. "
+                    f"Env may contain AWS_ACCESS_KEY_ID/SECRET for other principals (CloudGoat codebuild_secrets). "
+                    f"Service role {role_arn} executes builds."
+                )
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=role_arn,
+                    edge_type=EdgeType.CAN_READ_CODEBUILD_ENV,
+                    required_permissions=["codebuild:BatchGetProjects"],
+                    api_actions=["codebuild:ListProjects", "codebuild:BatchGetProjects"],
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=NoiseLevel.MEDIUM,
+                    guardrail_status="clear",
+                    conditions={"project_arn": proj_arn, "project_name": proj_name},
+                    notes=notes,
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 18c: Elastic Beanstalk Env Credential Theft (CloudGoat beanstalk_secrets)
+    # ==================================================================
+    def _add_beanstalk_env_theft_edges(self, ag: AttackGraph) -> None:
+        """Add edges for reading credentials from Beanstalk option settings.
+
+        CloudGoat beanstalk_secrets: DescribeConfigurationSettings reveals
+        option settings (env vars). May contain AWS_ACCESS_KEY_ID, RDS_PASSWORD
+        for another principal. Pivot to that principal for CreateAccessKey, etc.
+        We add identity -> external credential placeholder when has_credential_like_env.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        for env_arn in self._env.nodes_of_type(NodeType.ELASTICBEANSTALK_ENVIRONMENT):
+            env_data = self._env.get_node_data(env_arn)
+            env_name = env_data.get("environment_name", env_arn.split("/")[-1])
+            has_cred = env_data.get("has_credential_like_env", False)
+            for source in identities:
+                if not self._identity_has_permission(
+                    source, "elasticbeanstalk:DescribeConfigurationSettings",
+                ):
+                    continue
+                detection = self._scorer.score("elasticbeanstalk:DescribeConfigurationSettings")
+                prob = 0.80 if has_cred else 0.60
+                notes = (
+                    f"Elastic Beanstalk env {env_name} — DescribeConfigurationSettings "
+                    f"reveals option settings. May contain AWS_ACCESS_KEY_ID, RDS_PASSWORD "
+                    f"(CloudGoat beanstalk_secrets). Use creds to pivot, then CreateAccessKey on admin."
+                )
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=env_arn,
+                    edge_type=EdgeType.CAN_READ_BEANSTALK_ENV,
+                    required_permissions=["elasticbeanstalk:DescribeConfigurationSettings"],
+                    api_actions=[
+                        "elasticbeanstalk:DescribeEnvironments",
+                        "elasticbeanstalk:DescribeConfigurationSettings",
+                    ],
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=NoiseLevel.MEDIUM,
+                    guardrail_status="clear",
+                    conditions={"environment_name": env_name},
+                    notes=notes,
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 18d: Bedrock Agent Hijacking (CloudGoat bedrock_agent_hijacking)
+    # ==================================================================
+    def _add_bedrock_agent_hijacking_edges(self, ag: AttackGraph) -> None:
+        """Add edges for hijacking Bedrock agent via Lambda update.
+
+        Agent uses Action Groups backed by Lambda. If identity can update
+        Lambda and invoke the agent, they can make the agent run modified
+        code and return S3 data. Update Lambda -> Invoke Agent -> exfil.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        for agent_arn in self._env.nodes_of_type(NodeType.BEDROCK_AGENT):
+            agent_data = self._env.get_node_data(agent_arn)
+            lambda_arns = agent_data.get("action_group_lambda_arns", [])
+            agent_name = agent_data.get("agent_name", agent_arn.split("/")[-1])
+            if not lambda_arns:
+                continue
+            for lam_arn in lambda_arns:
+                if not self._env.has_node(lam_arn):
+                    continue
+                lam_data = self._env.get_node_data(lam_arn)
+                role_arn = lam_data.get("role_arn")
+                if not role_arn:
+                    continue
+                for source in identities:
+                    if not self._identity_has_permission(
+                        source, "lambda:UpdateFunctionCode", resource_arn=lam_arn,
+                    ):
+                        continue
+                    if not self._identity_has_permission(
+                        source, "bedrock:InvokeAgent",
+                    ):
+                        continue
+                    detection = (
+                        self._scorer.score("lambda:UpdateFunctionCode")
+                        + self._scorer.score("bedrock:InvokeAgent")
+                    )
+                    prob = 0.85
+                    notes = (
+                        f"Bedrock agent {agent_name} uses Lambda {lam_arn}. "
+                        f"Update Lambda code + InvokeAgent -> agent runs modified Lambda, "
+                        f"returns S3/data (CloudGoat bedrock_agent_hijacking)."
+                    )
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=role_arn,
+                        edge_type=EdgeType.CAN_HIJACK_BEDROCK_AGENT,
+                        required_permissions=[
+                            "lambda:UpdateFunctionCode",
+                            "bedrock:InvokeAgent",
+                        ],
+                        api_actions=[
+                            "lambda:UpdateFunctionCode",
+                            "bedrock:InvokeAgent",
+                        ],
+                        detection_cost=detection,
+                        success_probability=prob,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        conditions={
+                            "agent_arn": agent_arn,
+                            "lambda_arn": lam_arn,
+                        },
+                        notes=notes,
+                    ))
+
+    # ==================================================================
     # ATTACK PATH 19: Misconfigured Resource-Based Policies
     # https://hackingthe.cloud/aws/exploitation/Misconfigured_Resource-Based_Policies/
     # ==================================================================
@@ -2544,6 +2743,72 @@ class AttackGraphBuilder:
                 ))
 
     # ==================================================================
+    # ATTACK PATH 23b: Bedrock AgentCore Role Confusion (CloudGoat)
+    # https://github.com/RhinoSecurityLabs/cloudgoat/tree/master/cloudgoat/scenarios/aws/agentcore_identity_confusion
+    # ==================================================================
+    def _add_agentcore_role_confusion_edges(self, ag: AttackGraph) -> None:
+        """AgentCore identity confusion — create code interpreter with agent runtime role.
+
+        Code interpreter and agent runtime roles both trust bedrock-agentcore.
+        If identity has PassRole + CreateCodeInterpreter, they can create a
+        code interpreter with the agent runtime role (instead of interpreter
+        role) to access Knowledge Base, S3, or other resources the runtime has.
+        """
+        AGENTCORE_SERVICE = "bedrock-agentcore.amazonaws.com"
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        roles = self._env.nodes_of_type(NodeType.ROLE)
+
+        required_actions = [
+            "bedrock-agentcore:CreateCodeInterpreter",
+            "bedrock-agentcore:StartCodeInterpreterSession",
+            "bedrock-agentcore:InvokeCodeInterpreter",
+        ]
+
+        for source in identities:
+            if not all(
+                self._identity_has_permission(source, a) for a in required_actions
+            ):
+                continue
+
+            for role in roles:
+                if not self._identity_has_permission(
+                    source, "iam:PassRole", resource_arn=role,
+                ):
+                    continue
+
+                role_data = self._env.get_node_data(role)
+                trust = role_data.get("trust_policy") or {}
+                principals = self._extract_trust_principals(trust)
+                if AGENTCORE_SERVICE not in principals:
+                    continue
+
+                actions = ["iam:PassRole"] + required_actions
+                detection = sum(self._scorer.score(a) for a in actions)
+                prob = 0.80 * self._get_permission_confidence_multiplier(
+                    source, "iam:PassRole", role,
+                )
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=role,
+                    edge_type=EdgeType.CAN_PASSROLE_AGENTCORE,
+                    required_permissions=actions,
+                    api_actions=actions,
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=NoiseLevel.HIGH,
+                    guardrail_status="clear",
+                    notes=(
+                        "AgentCore role confusion — create code interpreter "
+                        "with agent runtime role (trusts bedrock-agentcore). "
+                        "Invoke to run commands as role; access Knowledge Base, "
+                        "S3, or foundation models. CloudGoat agentcore_identity_confusion."
+                    ),
+                ))
+
+    # ==================================================================
     # ATTACK PATH 24: Lambda UpdateFunctionConfiguration
     # Role change or malicious Lambda layer injection
     # ==================================================================
@@ -2747,6 +3012,63 @@ class AttackGraphBuilder:
                     guardrail_status="clear",
                     notes="SetDefaultPolicyVersion — revert to older version with more permissions.",
                 ))
+
+        # CreateAdminUser — CreateUser + AttachUserPolicy(AdministratorAccess)
+        account_nodes = self._env.nodes_of_type(NodeType.ACCOUNT)
+        root_targets = [
+            a for a in account_nodes
+            if a.endswith(":root") and ":root" in a and not a.endswith("aws:root")
+        ]
+        for source in identities:
+            for target in root_targets:
+                if (
+                    self._identity_has_permission(source, "iam:CreateUser")
+                    and self._identity_has_permission(source, "iam:AttachUserPolicy")
+                ):
+                    actions = ["iam:CreateUser", "iam:AttachUserPolicy"]
+                    detection = sum(self._scorer.score(a) for a in actions)
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_CREATE_ADMIN_USER,
+                        required_permissions=actions,
+                        api_actions=actions,
+                        detection_cost=detection,
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.CRITICAL,
+                        guardrail_status="clear",
+                        notes=(
+                            "CreateUser + AttachUserPolicy(AdministratorAccess) — "
+                            "create new admin user; Stratus iam-create-admin-user."
+                        ),
+                    ))
+                    break
+
+        # CreateBackdoorRole — CreateRole(external trust) + AttachRolePolicy(AdministratorAccess)
+        for source in identities:
+            for target in root_targets:
+                if (
+                    self._identity_has_permission(source, "iam:CreateRole")
+                    and self._identity_has_permission(source, "iam:AttachRolePolicy")
+                ):
+                    actions = ["iam:CreateRole", "iam:AttachRolePolicy"]
+                    detection = sum(self._scorer.score(a) for a in actions)
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_CREATE_BACKDOOR_ROLE,
+                        required_permissions=actions,
+                        api_actions=actions,
+                        detection_cost=detection,
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.CRITICAL,
+                        guardrail_status="clear",
+                        notes=(
+                            "CreateRole with external trust + AttachRolePolicy(AdministratorAccess) — "
+                            "backdoor role assumable from attacker account; Stratus iam-create-backdoor-role."
+                        ),
+                    ))
+                    break
 
         # Delete/Detach policy (removes deny or boundary)
         for source in identities:
@@ -2972,6 +3294,40 @@ class AttackGraphBuilder:
                     role_arn = func_data.get("role_arn")
                     if not role_arn:
                         continue
+
+                    # Lambda backdoor: AddPermission(principal=*) + InvokeFunction
+                    # Enables external invocation; Lambda runs as role. Stratus lambda-backdoor-function.
+                    if self._identity_has_permission(
+                        source, "lambda:InvokeFunction", resource_arn=func_arn,
+                    ):
+                        bd_detection = (
+                            self._scorer.score("lambda:AddPermission")
+                            + self._scorer.score("lambda:InvokeFunction")
+                        )
+                        ag.add_edge(AttackEdge(
+                            source_arn=source,
+                            target_arn=role_arn,
+                            edge_type=EdgeType.CAN_BACKDOOR_LAMBDA,
+                            required_permissions=[
+                                "lambda:AddPermission",
+                                "lambda:InvokeFunction",
+                            ],
+                            api_actions=[
+                                "lambda:AddPermission",
+                                "lambda:InvokeFunction",
+                            ],
+                            detection_cost=bd_detection,
+                            success_probability=0.85 * self._get_permission_confidence_multiplier(
+                                source, "lambda:AddPermission", func_arn,
+                            ),
+                            noise_level=NoiseLevel.HIGH,
+                            guardrail_status="clear",
+                            notes=(
+                                "Lambda backdoor — AddPermission(principal=*) "
+                                "allows external invoke; Lambda runs as role. "
+                                "Stratus lambda-backdoor-function."
+                            ),
+                        ))
 
                     detection = (
                         self._scorer.score("events:PutRule")
@@ -3463,6 +3819,30 @@ class AttackGraphBuilder:
                         ),
                     ))
 
+                # PutEventSelectors — exclude data/management events from logging
+                if (
+                    self._identity_has_permission(source, "cloudtrail:DescribeTrails")
+                    and self._identity_has_permission(source, "cloudtrail:PutEventSelectors")
+                ):
+                    actions = ["cloudtrail:DescribeTrails", "cloudtrail:PutEventSelectors"]
+                    detection = sum(self._scorer.score(a) for a in actions)
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_MODIFY_CLOUDTRAIL_EVENT_SELECTORS,
+                        required_permissions=actions,
+                        api_actions=actions,
+                        detection_cost=detection,
+                        success_probability=0.85,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes=(
+                            "CloudTrail evasion — PutEventSelectors: exclude data "
+                            "events, management events, or resource types from "
+                            "logging. Stealthier than stop/delete. Stratus cloudtrail-event-selectors."
+                        ),
+                    ))
+
                 # S3 lifecycle on CloudTrail log bucket — shorten retention
                 if self._identity_has_permission(
                     source, "s3:PutBucketLifecycleConfiguration",
@@ -3488,6 +3868,272 @@ class AttackGraphBuilder:
                             "targets. Shorten retention so evidence expires sooner."
                         ),
                     ))
+
+    # ==================================================================
+    # ATTACK PATH 30: Stratus Red Team Techniques (not previously covered)
+    # ==================================================================
+    def _add_stratus_technique_edges(self, ag: AttackGraph) -> None:
+        """Add edges for Stratus techniques: EC2 password, share, evasion, etc."""
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+        snapshots = self._env.nodes_of_type(NodeType.EBS_SNAPSHOT)
+        account_nodes = self._env.nodes_of_type(NodeType.ACCOUNT)
+        root_targets = [
+            a for a in account_nodes
+            if a.endswith(":root") and ":root" in a and not a.endswith("aws:root")
+        ]
+
+        for source in identities:
+            # EC2 GetPasswordData (Windows)
+            for inst in instances:
+                if self._identity_has_permission(source, "ec2:GetPasswordData"):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=inst,
+                        edge_type=EdgeType.CAN_GET_EC2_PASSWORD_DATA,
+                        required_permissions=["ec2:GetPasswordData"],
+                        api_actions=["ec2:GetPasswordData"],
+                        detection_cost=self._scorer.score("ec2:GetPasswordData"),
+                        success_probability=0.85,
+                        noise_level=NoiseLevel.MEDIUM,
+                        guardrail_status="clear",
+                        notes="EC2 GetPasswordData — retrieve Windows instance password. Stratus ec2-get-password-data.",
+                    ))
+
+            # EC2 Instance Connect
+            for inst in instances:
+                if self._identity_has_permission(
+                    source, "ec2-instance-connect:SendSSHPublicKey",
+                ):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=inst,
+                        edge_type=EdgeType.CAN_EC2_INSTANCE_CONNECT,
+                        required_permissions=["ec2-instance-connect:SendSSHPublicKey"],
+                        api_actions=["ec2-instance-connect:SendSSHPublicKey"],
+                        detection_cost=self._scorer.score(
+                            "ec2-instance-connect:SendSSHPublicKey",
+                        ),
+                        success_probability=0.80,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="EC2 Instance Connect — push SSH key for 60s access. Stratus ec2-instance-connect.",
+                    ))
+
+            # EC2 Serial Console
+            for inst in instances:
+                if self._identity_has_permission(
+                    source, "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+                ):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=inst,
+                        edge_type=EdgeType.CAN_EC2_SERIAL_CONSOLE_SSH,
+                        required_permissions=[
+                            "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+                        ],
+                        api_actions=[
+                            "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+                        ],
+                        detection_cost=self._scorer.score(
+                            "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+                        ),
+                        success_probability=0.75,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="EC2 Serial Console — push SSH key for serial console. Stratus ec2-serial-console-send-ssh-public-key.",
+                    ))
+
+            # Share EBS Snapshot
+            for snap in snapshots:
+                if self._identity_has_permission(source, "ec2:ModifySnapshotAttribute"):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=snap,
+                        edge_type=EdgeType.CAN_SHARE_EBS_SNAPSHOT,
+                        required_permissions=["ec2:ModifySnapshotAttribute"],
+                        api_actions=["ec2:ModifySnapshotAttribute"],
+                        detection_cost=self._scorer.score("ec2:ModifySnapshotAttribute"),
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="Share EBS snapshot with external account. Stratus ec2-share-ebs-snapshot.",
+                    ))
+
+            # Account-level edges (one per source)
+            for target in root_targets:
+                if self._identity_has_permission(
+                    source, "ec2:AuthorizeSecurityGroupIngress",
+                ):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_OPEN_SECURITY_GROUP_INGRESS,
+                        required_permissions=["ec2:AuthorizeSecurityGroupIngress"],
+                        api_actions=["ec2:AuthorizeSecurityGroupIngress"],
+                        detection_cost=self._scorer.score(
+                            "ec2:AuthorizeSecurityGroupIngress",
+                        ),
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="Open security group port 22 ingress. Stratus ec2-security-group-open-port-22-ingress.",
+                    ))
+
+                if (
+                    self._identity_has_permission(source, "ec2:ModifyImageAttribute")
+                    and self._identity_has_permission(source, "ec2:DescribeImages")
+                ):
+                    actions = ["ec2:ModifyImageAttribute", "ec2:DescribeImages"]
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_SHARE_AMI,
+                        required_permissions=actions,
+                        api_actions=actions,
+                        detection_cost=sum(self._scorer.score(a) for a in actions),
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="Share AMI with external account. Stratus ec2-share-ami.",
+                    ))
+
+                if self._identity_has_permission(
+                    source, "rds:ModifyDBSnapshotAttribute",
+                ):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_SHARE_RDS_SNAPSHOT,
+                        required_permissions=["rds:ModifyDBSnapshotAttribute"],
+                        api_actions=["rds:ModifyDBSnapshotAttribute"],
+                        detection_cost=self._scorer.score(
+                            "rds:ModifyDBSnapshotAttribute",
+                        ),
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.CRITICAL,
+                        guardrail_status="clear",
+                        notes="Share RDS snapshot with external account. Stratus rds-share-snapshot.",
+                    ))
+
+                if self._identity_has_permission(source, "bedrock:InvokeModel"):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_INVOKE_BEDROCK_MODEL,
+                        required_permissions=["bedrock:InvokeModel"],
+                        api_actions=["bedrock:InvokeModel"],
+                        detection_cost=self._scorer.score("bedrock:InvokeModel"),
+                        success_probability=0.95,
+                        noise_level=NoiseLevel.MEDIUM,
+                        guardrail_status="clear",
+                        notes="Bedrock InvokeModel — LLMjacking/cost abuse. Stratus bedrock-invoke-model.",
+                    ))
+
+                if self._identity_has_permission(
+                    source, "route53resolver:DeleteResolverQueryLogConfig",
+                ):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_DELETE_DNS_LOGS,
+                        required_permissions=[
+                            "route53resolver:DeleteResolverQueryLogConfig",
+                        ],
+                        api_actions=["route53resolver:DeleteResolverQueryLogConfig"],
+                        detection_cost=self._scorer.score(
+                            "route53resolver:DeleteResolverQueryLogConfig",
+                        ),
+                        success_probability=0.85,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="Delete DNS query logging. Stratus dns-delete-logs.",
+                    ))
+
+                if self._identity_has_permission(
+                    source, "organizations:LeaveOrganization",
+                ):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_LEAVE_ORGANIZATION,
+                        required_permissions=["organizations:LeaveOrganization"],
+                        api_actions=["organizations:LeaveOrganization"],
+                        detection_cost=self._scorer.score(
+                            "organizations:LeaveOrganization",
+                        ),
+                        success_probability=0.95,
+                        noise_level=NoiseLevel.CRITICAL,
+                        guardrail_status="clear",
+                        notes="Leave AWS Organization. Stratus organizations-leave.",
+                    ))
+
+                if self._identity_has_permission(source, "ec2:DeleteFlowLogs"):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_REMOVE_VPC_FLOW_LOGS,
+                        required_permissions=["ec2:DeleteFlowLogs"],
+                        api_actions=["ec2:DeleteFlowLogs"],
+                        detection_cost=self._scorer.score("ec2:DeleteFlowLogs"),
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="Remove VPC flow logs. Stratus vpc-remove-flow-logs.",
+                    ))
+
+                if self._identity_has_permission(source, "ses:ListIdentities"):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_ENUMERATE_SES,
+                        required_permissions=["ses:ListIdentities"],
+                        api_actions=["ses:ListIdentities"],
+                        detection_cost=self._scorer.score("ses:ListIdentities"),
+                        success_probability=0.95,
+                        noise_level=NoiseLevel.LOW,
+                        guardrail_status="clear",
+                        notes="Enumerate SES identities. Stratus ses-enumerate.",
+                    ))
+
+                if self._identity_has_permission(
+                    source, "sagemaker:UpdateNotebookInstanceLifecycleConfig",
+                ):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_MODIFY_SAGEMAKER_LIFECYCLE,
+                        required_permissions=[
+                            "sagemaker:UpdateNotebookInstanceLifecycleConfig",
+                        ],
+                        api_actions=["sagemaker:UpdateNotebookInstanceLifecycleConfig"],
+                        detection_cost=self._scorer.score(
+                            "sagemaker:UpdateNotebookInstanceLifecycleConfig",
+                        ),
+                        success_probability=0.85,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="SageMaker lifecycle config — inject code on startup. Stratus sagemaker-update-lifecycle-config.",
+                    ))
+
+                if self._identity_has_permission(source, "eks:CreateAccessEntry"):
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=target,
+                        edge_type=EdgeType.CAN_CREATE_EKS_ACCESS_ENTRY,
+                        required_permissions=["eks:CreateAccessEntry"],
+                        api_actions=["eks:CreateAccessEntry"],
+                        detection_cost=self._scorer.score("eks:CreateAccessEntry"),
+                        success_probability=0.90,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        notes="EKS CreateAccessEntry — add IAM principal to cluster. Stratus eks-create-access-entry.",
+                    ))
+
+                break  # One set of account edges per source
 
     def _s3_bucket_name_from_arn(self, arn: str) -> str:
         """Extract bucket name from S3 ARN."""

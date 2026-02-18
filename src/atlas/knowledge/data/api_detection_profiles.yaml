@@ -823,6 +823,16 @@ profiles:
     is_mutating: true
     behavioral_notes: "Maximum alert.  Never recommended."
 
+  - api_action: "cloudtrail:PutEventSelectors"
+    service: "cloudtrail"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.75
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Modifies event selectors — can exclude data events, management events, or specific resource types from logging. Stratus cloudtrail-event-selectors evasion path."
+
   # =========================================================================
   # GuardDuty (detection posture discovery)
   # =========================================================================
@@ -1065,6 +1075,17 @@ profiles:
     is_mutating: false
     behavioral_notes: "Retrieves actual secret value.  Higher detection risk — anomalous if called by identities that don't normally access secrets."
 
+  - api_action: "secretsmanager:BatchGetSecretValue"
+    service: "secretsmanager"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types:
+      - "CredentialAccess:IAMUser/AnomalousBehavior"
+    base_detection_score: 0.42
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "Batch retrieval of multiple secrets. Stratus secretsmanager-batch-retrieve-secrets. Slightly higher signal than single GetSecretValue."
+
   - api_action: "secretsmanager:PutResourcePolicy"
     service: "secretsmanager"
     cloudtrail_visibility: "management_write"
@@ -1243,3 +1264,189 @@ profiles:
     noise_level: "low"
     is_mutating: false
     behavioral_notes: "Lists backup vaults.  Vault names and encryption keys provide organizational context."
+
+  # =========================================================================
+  # Bedrock AgentCore — Code Interpreter / Role Confusion (CloudGoat)
+  # =========================================================================
+  - api_action: "bedrock-agentcore:CreateCodeInterpreter"
+    service: "bedrock-agentcore"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.55
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Creates a code interpreter with a passed role. Role confusion: use agent runtime role instead of interpreter role to access Knowledge Base, S3, etc."
+
+  - api_action: "bedrock-agentcore:StartCodeInterpreterSession"
+    service: "bedrock-agentcore"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.45
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Starts a code interpreter session. Required to invoke code as the passed role."
+
+  - api_action: "bedrock-agentcore:InvokeCodeInterpreter"
+    service: "bedrock-agentcore"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.50
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Executes code in the interpreter session. Code runs with the role's permissions — can exfil data, access S3, query Knowledge Base."
+
+  # =========================================================================
+  # CodeBuild / Elastic Beanstalk / Bedrock (CloudGoat)
+  # =========================================================================
+  - api_action: "codebuild:BatchGetProjects"
+    service: "codebuild"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.25
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Reveals project env vars. May contain AWS_ACCESS_KEY_ID, SECRET (CloudGoat codebuild_secrets)."
+
+  - api_action: "elasticbeanstalk:DescribeConfigurationSettings"
+    service: "elasticbeanstalk"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.25
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Reveals option settings (env). May contain AWS creds, RDS_PASSWORD (CloudGoat beanstalk_secrets)."
+
+  - api_action: "bedrock:ListAgents"
+    service: "bedrock"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.15
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Lists Bedrock agents. First step for bedrock_agent_hijacking."
+
+  - api_action: "bedrock:InvokeAgent"
+    service: "bedrock"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.45
+    noise_level: "medium"
+    is_mutating: true
+    behavioral_notes: "Invokes agent; agent may run Lambda. With Lambda update, can exfil S3 data (CloudGoat bedrock_agent_hijacking)."
+
+  - api_action: "bedrock:InvokeModel"
+    service: "bedrock"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.35
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "InvokeModel — LLMjacking/cost abuse. Stratus bedrock-invoke-model."
+
+  - api_action: "ec2:GetPasswordData"
+    service: "ec2"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.35
+    noise_level: "medium"
+    is_mutating: false
+    behavioral_notes: "Retrieves Windows instance password (base64). Stratus ec2-get-password-data."
+
+  - api_action: "ec2:ModifyImageAttribute"
+    service: "ec2"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.65
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Share AMI with external accounts. Stratus ec2-share-ami."
+
+  - api_action: "ec2:DeleteFlowLogs"
+    service: "ec2"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.70
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Remove VPC flow logs — defense evasion. Stratus vpc-remove-flow-logs."
+
+  - api_action: "ec2-instance-connect:SendSSHPublicKey"
+    service: "ec2-instance-connect"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.50
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "EC2 Instance Connect — push SSH key for 60s access. Stratus ec2-instance-connect."
+
+  - api_action: "ec2-instance-connect:SendSerialConsoleSSHPublicKey"
+    service: "ec2-instance-connect"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.55
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "EC2 Serial Console — push SSH key for serial console. Stratus ec2-serial-console-send-ssh-public-key."
+
+  - api_action: "route53resolver:DeleteResolverQueryLogConfig"
+    service: "route53resolver"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.75
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Delete DNS query logging — defense evasion. Stratus dns-delete-logs."
+
+  - api_action: "organizations:LeaveOrganization"
+    service: "organizations"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.90
+    noise_level: "critical"
+    is_mutating: true
+    behavioral_notes: "Leave AWS Organization — impact. Stratus organizations-leave."
+
+  - api_action: "ses:ListIdentities"
+    service: "ses"
+    cloudtrail_visibility: "management_read"
+    is_read_only: true
+    guardduty_finding_types: []
+    base_detection_score: 0.12
+    noise_level: "low"
+    is_mutating: false
+    behavioral_notes: "Enumerate SES identities (emails, domains). Stratus ses-enumerate."
+
+  - api_action: "sagemaker:UpdateNotebookInstanceLifecycleConfig"
+    service: "sagemaker"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.65
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Inject code on notebook start — credential theft. Stratus sagemaker-update-lifecycle-config."
+
+  - api_action: "eks:CreateAccessEntry"
+    service: "eks"
+    cloudtrail_visibility: "management_write"
+    is_read_only: false
+    guardduty_finding_types: []
+    base_detection_score: 0.70
+    noise_level: "high"
+    is_mutating: true
+    behavioral_notes: "Add IAM principal to EKS cluster access. Stratus eks-create-access-entry."

@@ -49,6 +49,9 @@ class NodeType(str, Enum):
     COGNITO_USER_POOL = "cognito_user_pool"
     COGNITO_IDENTITY_POOL = "cognito_identity_pool"
     CLOUDFRONT_DISTRIBUTION = "cloudfront_distribution"
+    CODEBUILD_PROJECT = "codebuild_project"
+    ELASTICBEANSTALK_ENVIRONMENT = "elasticbeanstalk_environment"
+    BEDROCK_AGENT = "bedrock_agent"
     ACCOUNT = "account"
     CREDENTIAL = "credential"
 
@@ -82,10 +85,27 @@ class EdgeType(str, Enum):
     CAN_MODIFY_USERDATA = "can_modify_userdata"  # identity -> ec2 instance (inject user data)
     CAN_STEAL_LAMBDA_CREDS = "can_steal_lambda_creds"  # identity -> role (via Lambda SSRF/XXE)
     CAN_STEAL_ECS_TASK_CREDS = "can_steal_ecs_task_creds"  # identity -> role (via ECS container RCE)
+    CAN_READ_CODEBUILD_ENV = "can_read_codebuild_env"  # identity -> role (creds in CodeBuild env; CloudGoat codebuild_secrets)
+    CAN_READ_BEANSTALK_ENV = "can_read_beanstalk_env"  # identity -> role (creds in Beanstalk config; CloudGoat beanstalk_secrets)
+    CAN_HIJACK_BEDROCK_AGENT = "can_hijack_bedrock_agent"  # identity -> Lambda role (update Lambda used by agent; CloudGoat bedrock_agent_hijacking)
     CAN_ACCESS_VIA_RESOURCE_POLICY = "can_access_via_resource_policy"  # identity -> resource (Principal "*" etc.)
     CAN_ASSUME_VIA_OIDC_MISCONFIG = "can_assume_via_oidc_misconfig"  # external -> role (GitLab/Terraform/GitHub/Cognito)
     CAN_SELF_SIGNUP_COGNITO = "can_self_signup_cognito"  # identity -> cognito user pool
     CAN_TAKEOVER_CLOUDFRONT_ORIGIN = "can_takeover_cloudfront_origin"  # finding: orphaned S3 origin
+    CAN_GET_EC2_PASSWORD_DATA = "can_get_ec2_password_data"  # identity -> ec2 (Windows password)
+    CAN_OPEN_SECURITY_GROUP_INGRESS = "can_open_security_group_ingress"  # open port 22
+    CAN_SHARE_AMI = "can_share_ami"
+    CAN_SHARE_EBS_SNAPSHOT = "can_share_ebs_snapshot"
+    CAN_SHARE_RDS_SNAPSHOT = "can_share_rds_snapshot"
+    CAN_INVOKE_BEDROCK_MODEL = "can_invoke_bedrock_model"  # LLMjacking
+    CAN_EC2_INSTANCE_CONNECT = "can_ec2_instance_connect"
+    CAN_EC2_SERIAL_CONSOLE_SSH = "can_ec2_serial_console_ssh"
+    CAN_DELETE_DNS_LOGS = "can_delete_dns_logs"
+    CAN_LEAVE_ORGANIZATION = "can_leave_organization"
+    CAN_REMOVE_VPC_FLOW_LOGS = "can_remove_vpc_flow_logs"
+    CAN_ENUMERATE_SES = "can_enumerate_ses"
+    CAN_MODIFY_SAGEMAKER_LIFECYCLE = "can_modify_sagemaker_lifecycle"
+    CAN_CREATE_EKS_ACCESS_ENTRY = "can_create_eks_access_entry"
 
     # Privilege escalation edges
     CAN_CREATE_KEY = "can_create_key"      # identity -> target_user
@@ -95,10 +115,13 @@ class EdgeType(str, Enum):
     CAN_UPDATE_LAMBDA = "can_update_lambda"
     CAN_CREATE_LAMBDA = "can_create_lambda"
     CAN_UPDATE_LAMBDA_CONFIG = "can_update_lambda_config"  # role change or malicious layer
+    CAN_BACKDOOR_LAMBDA = "can_backdoor_lambda"  # AddPermission for external invoke
     CAN_MODIFY_TRUST = "can_modify_trust"
     CAN_CREATE_LOGIN_PROFILE = "can_create_login_profile"
     CAN_UPDATE_LOGIN_PROFILE = "can_update_login_profile"
     CAN_ADD_USER_TO_GROUP = "can_add_user_to_group"
+    CAN_CREATE_ADMIN_USER = "can_create_admin_user"
+    CAN_CREATE_BACKDOOR_ROLE = "can_create_backdoor_role"
     CAN_CREATE_POLICY_VERSION = "can_create_policy_version"
     CAN_SET_DEFAULT_POLICY_VERSION = "can_set_default_policy_version"
     CAN_DELETE_OR_DETACH_POLICY = "can_delete_or_detach_policy"
@@ -107,6 +130,7 @@ class EdgeType(str, Enum):
     CAN_PASSROLE_EC2 = "can_passrole_ec2"       # PassRole + ec2:RunInstances
     CAN_PASSROLE_ECS = "can_passrole_ecs"      # PassRole + ecs:RunTask
     CAN_PASSROLE_CLOUDFORMATION = "can_passrole_cloudformation"
+    CAN_PASSROLE_AGENTCORE = "can_passrole_agentcore"  # PassRole + create code interpreter (role confusion)
     CAN_PASSROLE_GLUE = "can_passrole_glue"
     CAN_PASSROLE_AUTOSCALING = "can_passrole_autoscaling"
     CAN_UPDATE_GLUE_DEV_ENDPOINT = "can_update_glue_dev_endpoint"
@@ -132,6 +156,7 @@ class EdgeType(str, Enum):
     CAN_DELETE_CLOUDTRAIL = "can_delete_cloudtrail"
     CAN_UPDATE_CLOUDTRAIL_CONFIG = "can_update_cloudtrail_config"
     CAN_MODIFY_CLOUDTRAIL_BUCKET_LIFECYCLE = "can_modify_cloudtrail_bucket_lifecycle"
+    CAN_MODIFY_CLOUDTRAIL_EVENT_SELECTORS = "can_modify_cloudtrail_event_selectors"
 
     # Credential chain
     CREDENTIAL_FOR = "credential_for"      # credential -> identity

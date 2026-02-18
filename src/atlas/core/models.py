@@ -276,6 +276,48 @@ class CloudFrontDistribution(BaseModel):
     discovered_at: str = Field(default_factory=_now_iso)
 
 
+class CodeBuildProject(BaseModel):
+    """CodeBuild project with env vars (CloudGoat codebuild_secrets)."""
+
+    model_config = {"frozen": True}
+
+    project_name: str
+    arn: str
+    region: str
+    service_role_arn: str | None = None
+    environment_variables: dict[str, str] = Field(default_factory=dict)
+    has_credential_like_env: bool = False
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class ElasticBeanstalkEnvironment(BaseModel):
+    """Elastic Beanstalk environment with option settings (CloudGoat beanstalk_secrets)."""
+
+    model_config = {"frozen": True}
+
+    environment_name: str
+    environment_id: str
+    arn: str
+    region: str
+    application_name: str = ""
+    option_settings: dict[str, str] = Field(default_factory=dict)
+    has_credential_like_env: bool = False
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
+class BedrockAgent(BaseModel):
+    """Bedrock agent with action groups (CloudGoat bedrock_agent_hijacking)."""
+
+    model_config = {"frozen": True}
+
+    agent_id: str
+    agent_name: str
+    arn: str
+    region: str
+    action_group_lambda_arns: list[str] = Field(default_factory=list)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
 class SecretsManagerSecret(BaseModel):
     """Represents a discovered Secrets Manager secret (value NOT stored)."""
     model_config = {"frozen": True}

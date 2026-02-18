@@ -102,6 +102,7 @@ class ReconConfig(BaseModel):
             "s3", "ec2", "lambda", "rds", "kms",
             "secretsmanager", "ssm", "cloudformation", "ebs", "ecs",
             "ecr", "cognito", "cloudfront",
+            "codebuild", "elasticbeanstalk", "bedrock",
         ],
         description="Which resource types the resource collector should enumerate.",
     )

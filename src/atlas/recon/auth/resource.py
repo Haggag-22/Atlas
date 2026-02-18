@@ -19,12 +19,15 @@ from typing import Any
 import structlog
 
 from atlas.core.models import (
+    BedrockAgent,
     CloudFormationStack,
     CloudFrontDistribution,
+    CodeBuildProject,
     CognitoIdentityPool,
     CognitoUserPool,
     EBSSnapshot,
     EC2Instance,
+    ElasticBeanstalkEnvironment,
     ECRRepository,
     ECSTaskDefinition,
     KMSKey,
@@ -73,6 +76,9 @@ class ResourceCollector(BaseCollector):
             "cognito_user_pools": 0,
             "cognito_identity_pools": 0,
             "cloudfront_distributions": 0,
+            "codebuild_projects": 0,
+            "elasticbeanstalk_environments": 0,
+            "bedrock_agents": 0,
             "skipped_no_permission": 0,
         }
         resource_types = self._config.recon.resource_types
@@ -163,6 +169,24 @@ class ResourceCollector(BaseCollector):
             pass  # CloudFront is global; only collect in us-east-1
         elif "cloudfront" in resource_types:
             logger.info("resource_skipped", service="cloudfront", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "codebuild" in resource_types and self._caller_has("codebuild:ListProjects"):
+            stats["codebuild_projects"] = await self._collect_codebuild(account_id, region)
+        elif "codebuild" in resource_types:
+            logger.info("resource_skipped", service="codebuild", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "elasticbeanstalk" in resource_types and self._caller_has("elasticbeanstalk:DescribeEnvironments"):
+            stats["elasticbeanstalk_environments"] = await self._collect_elasticbeanstalk(account_id, region)
+        elif "elasticbeanstalk" in resource_types:
+            logger.info("resource_skipped", service="elasticbeanstalk", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "bedrock" in resource_types and self._caller_has("bedrock:ListAgents"):
+            stats["bedrock_agents"] = await self._collect_bedrock_agents(account_id, region)
+        elif "bedrock" in resource_types:
+            logger.info("resource_skipped", service="bedrock", reason="no permission")
             stats["skipped_no_permission"] += 1
 
         logger.info("resource_collection_complete", **stats)
@@ -1157,4 +1181,174 @@ class ResourceCollector(BaseCollector):
                 severity="HIGH",
             )
 
+        return count
+
+    # ------------------------------------------------------------------
+    # CodeBuild (CloudGoat codebuild_secrets)
+    # ------------------------------------------------------------------
+    async def _collect_codebuild(self, account_id: str, region: str) -> int:
+        """Collect CodeBuild projects with env vars (credential theft vector)."""
+        count = 0
+        async with self._session.client("codebuild", region_name=region) as cb:
+            raw_names = await async_paginate(cb, "list_projects", "projects")
+            names = [n for n in raw_names if isinstance(n, str)]
+            self._record(
+                "codebuild:ListProjects",
+                detection_cost=get_detection_score("codebuild:ListProjects"),
+            )
+            if not names:
+                return 0
+
+            batch = await safe_api_call(
+                cb.batch_get_projects(names=names[:25]),
+                default={"projects": []},
+            )
+            self._record(
+                "codebuild:BatchGetProjects",
+                detection_cost=get_detection_score("codebuild:BatchGetProjects"),
+            )
+            for raw in (batch or {}).get("projects", []):
+                proj_name = raw.get("name", "")
+                proj_arn = raw.get("arn", f"arn:aws:codebuild:{region}:{account_id}:project/{proj_name}")
+                env = raw.get("environment", {})
+                env_vars = {o["name"]: o.get("value", "") for o in env.get("environmentVariables", [])}
+                cred_keys = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "ACCESS_KEY", "SECRET_KEY"}
+                has_cred = any(k.upper() in cred_keys for k in env_vars)
+                safe_env = {
+                    k: "***REDACTED***" if any(s in k.upper() for s in ("SECRET", "PASSWORD", "TOKEN", "KEY"))
+                    else v for k, v in env_vars.items()
+                }
+                project = CodeBuildProject(
+                    project_name=proj_name,
+                    arn=proj_arn,
+                    region=region,
+                    service_role_arn=raw.get("serviceRole"),
+                    environment_variables=safe_env,
+                    has_credential_like_env=has_cred,
+                )
+                self._graph.add_node(
+                    proj_arn, NodeType.CODEBUILD_PROJECT,
+                    data=project.model_dump(), label=proj_name,
+                )
+                count += 1
+        return count
+
+    # ------------------------------------------------------------------
+    # Elastic Beanstalk (CloudGoat beanstalk_secrets)
+    # ------------------------------------------------------------------
+    async def _collect_elasticbeanstalk(self, account_id: str, region: str) -> int:
+        """Collect Elastic Beanstalk environments with option settings (credential theft vector)."""
+        count = 0
+        async with self._session.client("elasticbeanstalk", region_name=region) as eb:
+            envs = await safe_api_call(eb.describe_environments(), default={"Environments": []})
+            self._record(
+                "elasticbeanstalk:DescribeEnvironments",
+                detection_cost=get_detection_score("elasticbeanstalk:DescribeEnvironments"),
+            )
+            for env in (envs or {}).get("Environments", []):
+                env_name = env.get("EnvironmentName", "")
+                env_id = env.get("EnvironmentId", "")
+                app_name = env.get("ApplicationName", "")
+                env_arn = f"arn:aws:elasticbeanstalk:{region}:{account_id}:environment/{app_name}/{env_name}"
+                cfg = await safe_api_call(
+                    eb.describe_configuration_settings(
+                        ApplicationName=app_name,
+                        EnvironmentName=env_name,
+                    ),
+                    default={"ConfigurationSettings": []},
+                )
+                self._record(
+                    "elasticbeanstalk:DescribeConfigurationSettings",
+                    target_arn=env_arn,
+                    detection_cost=get_detection_score("elasticbeanstalk:DescribeConfigurationSettings"),
+                )
+                opts: dict[str, str] = {}
+                for cs in (cfg or {}).get("ConfigurationSettings", []):
+                    for opt in cs.get("OptionSettings", []):
+                        n, v = opt.get("OptionName", ""), opt.get("Value", "")
+                        if n and v:
+                            opts[n] = str(v)
+                cred_keys = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "RDS_PASSWORD", "DB_PASSWORD"}
+                has_cred = any(k.upper() in cred_keys for k in opts)
+                eb_env = ElasticBeanstalkEnvironment(
+                    environment_name=env_name,
+                    environment_id=env_id,
+                    arn=env_arn,
+                    region=region,
+                    application_name=app_name,
+                    option_settings=opts,
+                    has_credential_like_env=has_cred,
+                )
+                self._graph.add_node(
+                    env_arn, NodeType.ELASTICBEANSTALK_ENVIRONMENT,
+                    data=eb_env.model_dump(), label=env_name,
+                )
+                count += 1
+        return count
+
+    # ------------------------------------------------------------------
+    # Bedrock Agents (CloudGoat bedrock_agent_hijacking)
+    # ------------------------------------------------------------------
+    async def _collect_bedrock_agents(self, account_id: str, region: str) -> int:
+        """Collect Bedrock agents with action group Lambda ARNs."""
+        count = 0
+        async with self._session.client("bedrock-agent", region_name=region) as agent:
+            summaries = await async_paginate(agent, "list_agents", "agentSummaries")
+            self._record(
+                "bedrock:ListAgents",
+                detection_cost=get_detection_score("bedrock:ListAgents"),
+            )
+            for s in (summaries or []):
+                agent_id = s.get("agentId", "")
+                agent_name = s.get("agentName", agent_id)
+                agent_arn = f"arn:aws:bedrock:{region}:{account_id}:agent/{agent_id}"
+                version = s.get("latestAgentVersion", "DRAFT")
+                if not version or version == "DRAFT":
+                    version = "DRAFT"
+                ag_groups = await safe_api_call(
+                    agent.list_agent_action_groups(
+                        agentId=agent_id,
+                        agentVersion=version,
+                    ),
+                    default={"actionGroupSummaries": []},
+                )
+                self._record(
+                    "bedrock:ListAgentActionGroups",
+                    target_arn=agent_arn,
+                    detection_cost=get_detection_score("bedrock:ListAgentActionGroups"),
+                )
+                lambda_arns: list[str] = []
+                for ag in (ag_groups or {}).get("actionGroupSummaries", []):
+                    ag_id = ag.get("actionGroupId", "")
+                    if not ag_id:
+                        continue
+                    detail = await safe_api_call(
+                        agent.get_agent_action_group(
+                            agentId=agent_id,
+                            agentVersion=version,
+                            actionGroupId=ag_id,
+                        ),
+                        default={},
+                    )
+                    self._record(
+                        "bedrock:GetAgentActionGroup",
+                        target_arn=agent_arn,
+                        detection_cost=get_detection_score("bedrock:GetAgentActionGroup"),
+                    )
+                    exec_cfg = (detail or {}).get("actionGroupExecutor", {})
+                    lam = exec_cfg.get("lambda")
+                    if lam:
+                        lambda_arns.append(lam)
+                bedrock_agent = BedrockAgent(
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    arn=agent_arn,
+                    region=region,
+                    action_group_lambda_arns=lambda_arns,
+                )
+                self._graph.add_node(
+                    agent_arn, NodeType.BEDROCK_AGENT,
+                    data=bedrock_agent.model_dump(), label=agent_name,
+                )
+                count += 1
         return count
