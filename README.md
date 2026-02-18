@@ -55,6 +55,8 @@ pip install --upgrade atlas-redteam
 pipx upgrade atlas-redteam
 ```
 
+> **Note for maintainers:** To publish new versions so users get updates, see [docs/RELEASE.md](docs/RELEASE.md).
+
 **For development (editable install):**
 
 ```bash
