@@ -9,6 +9,7 @@ Commands:
   atlas simulate    — Simulate attack path from saved case (no AWS calls)
   atlas run         — Execute attack path from saved case (uses AWS)
   atlas cases       — List saved cases
+  atlas delete-case — Delete a saved case
   atlas explain     — Explain an attack path from a saved case (no AWS calls)
   atlas inspect     — Inspect detection profiles
   atlas inspect-key — Decode AWS account ID from access key ID (offline)
@@ -1082,6 +1083,36 @@ def cases() -> None:
     console.print(f"[dim]  atlas simulate --case <case> --attack-path AP-XX[/dim]")
     console.print(f"[dim]  atlas run --case <case> --attack-path AP-XX[/dim]")
     console.print(f"[dim]  atlas gui --case <case>[/dim]")
+    console.print(f"[dim]  atlas delete-case <case>[/dim]")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# atlas delete-case — remove a saved case
+# ═══════════════════════════════════════════════════════════════════════════
+@app.command("delete-case")
+def delete_case_cmd(
+    case: str = typer.Argument(..., help="Case name to delete"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+) -> None:
+    """Delete a saved case and its output directory."""
+    from atlas.core.cases import delete_case, list_cases
+
+    all_names = [c.get("name", "?") for c in list_cases()]
+    if case not in all_names:
+        console.print(f"\n[red]Case '{case}' not found.[/red]")
+        console.print("[dim]  Run  atlas cases  to see available cases.[/dim]")
+        raise typer.Exit(1)
+
+    if not force:
+        confirm = typer.confirm(f"Delete case '{case}' and output/{case}/?")
+        if not confirm:
+            console.print("[dim]Cancelled.[/dim]")
+            raise typer.Exit(0)
+
+    if delete_case(case):
+        console.print(f"[green]Deleted case '{case}'.[/green]")
+    else:
+        console.print(f"[yellow]Case '{case}' was not found or already removed.[/yellow]")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

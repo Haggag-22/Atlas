@@ -95,6 +95,7 @@ atlas gui --case mycase
 | `atlas simulate` | Simulate an attack path (no AWS calls) |
 | `atlas run` | Execute an attack path (uses AWS) |
 | `atlas cases` | List saved cases |
+| `atlas delete-case` | Delete a saved case |
 | `atlas explain` | Explain an attack path (AI or template) |
 | `atlas gui` | Open the Streamlit web UI |
 | `atlas inspect` | Inspect detection profiles for API actions |
