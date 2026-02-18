@@ -92,3 +92,26 @@ def get_all_services() -> list[str]:
     """Return list of unique AWS service names in the knowledge base."""
     profiles = load_api_profiles()
     return sorted({p.service for p in profiles.values() if p.service})
+
+
+# ---------------------------------------------------------------------------
+# Attack Pattern Registry (permission → technique mapping)
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=1)
+def load_attack_patterns() -> list[dict[str, Any]]:
+    """Load attack patterns from YAML. Patterns map permissions to techniques.
+
+    Each pattern defines:
+      - required_permissions: list of IAM actions (all must be present)
+      - edge_type: EdgeType value
+      - target_type: account | resource | identity
+      - target_resource_type / target_identity_type: for resource/identity targets
+      - target_resolution: self | role_arn (for resources)
+      - target_role_key: optional, e.g. task_role_arn for ECS
+    """
+    path = _DATA_DIR / "attack_patterns.yaml"
+    if not path.exists():
+        return []
+    raw = yaml.safe_load(path.read_text())
+    patterns = raw.get("patterns", [])
+    return [p for p in patterns if isinstance(p, dict) and "id" in p]

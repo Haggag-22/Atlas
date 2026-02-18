@@ -1,12 +1,13 @@
 """
 atlas.gui.app
 ~~~~~~~~~~~~~
-Streamlit GUI for Atlas — view attack paths and chain details.
+Streamlit GUI for Atlas — Prowler-style dashboard, attack paths, graph viz.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import sys
 from typing import Any
 
@@ -15,6 +16,7 @@ import streamlit as st
 from atlas.core.cases import load_case, list_cases, load_explanation, save_explanation
 from atlas.core.models import AttackChain, AttackEdge
 from atlas.core.types import EdgeType
+from atlas.knowledge.api_profiles import load_attack_patterns
 from atlas.planner.attack_graph import AttackGraph
 from atlas.planner.chain_finder import ChainFinder
 
@@ -45,7 +47,52 @@ _ACTION_NAMES: dict[str, str] = {
     "enum_backup": "Enumerate Backup Service",
     "decode_key_account": "Decode Key Account ID",
     "loot_public_snapshot": "Loot Public EBS Snapshot",
+    "can_passrole_ec2": "PassRole + EC2",
+    "can_passrole_ecs": "PassRole + ECS",
+    "can_update_lambda_config": "Lambda Config Update",
+    "can_steal_imds_creds": "IMDS Credential Theft",
+    "can_ssm_session": "SSM Session",
+    "can_snapshot_volume": "EC2 Volume Snapshot",
+    "can_modify_userdata": "EC2 UserData Injection",
+    "can_steal_lambda_creds": "Lambda Credential Theft",
+    "can_steal_ecs_task_creds": "ECS Task Credential Theft",
+    "can_read_codebuild_env": "CodeBuild Env Theft",
+    "can_read_beanstalk_env": "Beanstalk Env Theft",
+    "can_hijack_bedrock_agent": "Bedrock Agent Hijacking",
+    "can_access_via_resource_policy": "Resource Policy Misconfig",
+    "can_assume_via_oidc_misconfig": "OIDC Trust Abuse",
+    "can_self_signup_cognito": "Cognito Self-Signup",
+    "can_takeover_cloudfront_origin": "CloudFront Takeover",
+    "can_get_ec2_password_data": "EC2 Get Password Data",
+    "can_ec2_instance_connect": "EC2 Instance Connect",
+    "can_ec2_serial_console_ssh": "EC2 Serial Console",
+    "can_open_security_group_ingress": "Open Security Group",
+    "can_share_ami": "Share AMI",
+    "can_share_ebs_snapshot": "Share EBS Snapshot",
+    "can_share_rds_snapshot": "Share RDS Snapshot",
+    "can_invoke_bedrock_model": "Bedrock InvokeModel",
+    "can_delete_dns_logs": "Delete DNS Logs",
+    "can_leave_organization": "Leave Organization",
+    "can_remove_vpc_flow_logs": "Remove VPC Flow Logs",
+    "can_enumerate_ses": "Enumerate SES",
+    "can_modify_sagemaker_lifecycle": "SageMaker Lifecycle",
+    "can_create_eks_access_entry": "EKS Create Access Entry",
+    "can_create_admin_user": "Create Admin User",
+    "can_create_backdoor_role": "Create Backdoor Role",
+    "can_backdoor_lambda": "Lambda Backdoor",
+    "can_stop_cloudtrail": "CloudTrail Stop",
+    "can_delete_cloudtrail": "CloudTrail Delete",
+    "can_update_cloudtrail_config": "CloudTrail Config Update",
+    "can_modify_cloudtrail_bucket_lifecycle": "CloudTrail Bucket Lifecycle",
+    "can_modify_cloudtrail_event_selectors": "CloudTrail Event Selectors",
+    "can_get_federation_token": "GetFederationToken",
+    "can_create_roles_anywhere_persistence": "Roles Anywhere Persistence",
+    "can_obtain_creds_via_cognito_identity_pool": "Cognito Identity Pool Creds",
 }
+
+
+def _action_name(edge_type: str) -> str:
+    return _ACTION_NAMES.get(edge_type, edge_type.replace("_", " ").title())
 
 
 def _short_name(arn: str, max_len: int = 35) -> str:
@@ -309,8 +356,52 @@ async def _ask_ai_about_path(
     return response.choices[0].message.content or "No response generated."
 
 
+def _render_pyvis_graph(attack_edges: list[AttackEdge], source_identity: str) -> str:
+    """Build interactive attack graph HTML using pyvis."""
+    try:
+        from pyvis.network import Network
+    except ImportError:
+        return ""
+
+    net = Network(
+        height="500px",
+        width="100%",
+        bgcolor="#0e1117",
+        font_color="#fafafa",
+        directed=True,
+    )
+    net.set_options("""
+    var options = {
+      "nodes": {"font": {"size": 12}},
+      "edges": {"arrows": {"to": {"enabled": true}}, "smooth": {"type": "continuous"}},
+      "physics": {"enabled": true, "solver": "forceAtlas2Based"}
+    }
+    """)
+
+    seen: set[str] = set()
+    for e in attack_edges:
+        for arn in (e.source_arn, e.target_arn):
+            if arn not in seen:
+                seen.add(arn)
+                label = _short_name(arn, max_len=25)
+                color = "#4ade80" if arn == source_identity else "#60a5fa"
+                if ":root" in arn:
+                    color = "#fbbf24"
+                net.add_node(arn, label=html.escape(label), color=color)
+        label = _action_name(e.edge_type.value)
+        net.add_edge(e.source_arn, e.target_arn, title=html.escape(label))
+
+    return net.generate_html()
+
+
 def main() -> None:
     st.set_page_config(page_title="Atlas", page_icon="🛡️", layout="wide")
+    st.markdown("""
+    <style>
+    .stApp { background-color: #0e1117; }
+    [data-testid="stMetricValue"] { color: #4ade80; }
+    </style>
+    """, unsafe_allow_html=True)
     st.title("🛡️ Atlas — Attack Path Explorer")
 
     case_from_cli = _parse_cli_case()
@@ -352,191 +443,271 @@ def main() -> None:
         st.warning("No attack paths found for this case.")
         return
 
+    # Overview dashboard
+    quietest = min(chains, key=lambda c: c.total_detection_cost)
+    max_hops = max(c.hop_count for c in chains)
+    st.subheader("Overview")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Attack paths", len(chains))
+    with col2:
+        st.metric("Source identity", _short_name(source_identity))
+    with col3:
+        st.metric("Max hops", max_hops)
+    with col4:
+        st.metric("Quietest cost", f"{quietest.total_detection_cost:.4f}")
+
+    api_key_from_env = __import__("os").environ.get("OPENAI_API_KEY", "")
+    api_key_override = st.sidebar.text_input(
+        "OpenAI API key (optional)",
+        type="password",
+        placeholder="sk-...",
+        key="api_key_input",
+    )
+    api_key = api_key_from_env or (api_key_override or "")
+
+    # Tabs
+    tab_overview, tab_paths, tab_graph, tab_perms, tab_patterns = st.tabs([
+        "Overview", "Attack Paths", "Graph", "Permissions", "Pattern Registry",
+    ])
+
     # Build dropdown options: "AP-01: user → role" etc.
     path_options = []
     for pid, chain in path_map.items():
         label = f"{pid}: {chain.summary_text}"
         path_options.append((pid, label))
 
-    path_id = st.selectbox(
+    path_id = st.sidebar.selectbox(
         "Select attack path",
         options=[p[0] for p in path_options],
         format_func=lambda x: next(l for pid, l in path_options if pid == x),
         key="path_select",
     )
-
     selected_chain = path_map[path_id]
 
-    st.divider()
-
-    # Chain visualization
-    st.subheader(f"Chain {path_id}")
-    st.code(_chain_viz_text(selected_chain, path_id), language=None)
-
-    # Details
-    if selected_chain.hop_count == 1:
-        edge = selected_chain.edges[0]
-        st.subheader("Path details")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Attack type", _ACTION_NAMES.get(edge.edge_type.value, edge.edge_type.value))
-            st.metric("Source", _short_name(edge.source_arn))
-            st.metric("Target", _short_name(edge.target_arn))
-            st.metric("Target type", _arn_type(edge.target_arn))
-        with col2:
-            st.metric("Detection cost", f"{edge.detection_cost:.4f}")
-            st.metric("Success probability", f"{edge.success_probability:.0%}")
-            st.metric("Guardrail status", edge.guardrail_status.title())
-            st.metric("API actions", ", ".join(edge.api_actions) if edge.api_actions else "—")
-        if edge.notes:
-            st.caption("Notes")
-            st.text(edge.notes)
-
-        # Policies
-        st.subheader(f"Policies — {_short_name(edge.source_arn)} (Source)")
-        source_policies = _get_identity_policies(edge.source_arn, env_model)
-        if source_policies:
-            st.dataframe(
-                [{"Policy": p["name"], "Type": p["type"]} for p in source_policies],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.caption("None")
-
-        st.subheader(f"Policies — {_short_name(edge.target_arn)} (Target)")
-        target_policies = _get_identity_policies(edge.target_arn, env_model)
-        if target_policies:
-            st.dataframe(
-                [{"Policy": p["name"], "Type": p["type"]} for p in target_policies],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.caption("None")
-
-        label, resource_policy = _get_resource_policy(edge.target_arn, env_model)
-        if label and resource_policy:
-            st.subheader(f"{label} — {_short_name(edge.target_arn)}")
-            st.json(resource_policy)
-    else:
-        # Multi-hop
-        st.subheader("Chain summary")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Chain", selected_chain.summary_text)
-            st.metric("Final target", _short_name(selected_chain.final_target_arn))
-            st.metric("Final target type", _arn_type(selected_chain.final_target_arn))
-        with col2:
-            st.metric("Total detection cost", f"{selected_chain.total_detection_cost:.4f}")
-            st.metric("Combined success", f"{selected_chain.total_success_probability:.0%}")
-
-        st.subheader("Chain steps")
-        steps_data = []
-        for i, edge in enumerate(selected_chain.edges):
-            steps_data.append({
-                "Hop": i + 1,
-                "Action": _ACTION_NAMES.get(edge.edge_type.value, edge.edge_type.value),
-                "From": _short_name(edge.source_arn),
-                "To": _short_name(edge.target_arn),
-                "Cost": f"{edge.detection_cost:.4f}",
-                "Success": f"{edge.success_probability:.0%}",
+    # Tab: Overview — path list + quietest path
+    with tab_overview:
+        st.subheader("All attack paths")
+        overview_data = []
+        for pid, chain in path_map.items():
+            overview_data.append({
+                "Path": pid,
+                "Chain": chain.summary_text,
+                "Hops": chain.hop_count,
+                "Cost": f"{chain.total_detection_cost:.4f}",
+                "Success": f"{chain.total_success_probability:.0%}",
             })
-        st.dataframe(steps_data, use_container_width=True, hide_index=True)
+        st.dataframe(overview_data, use_container_width=True, hide_index=True)
+        st.subheader("Quietest path")
+        st.code(_chain_viz_text(quietest, "Quietest"), language=None)
 
-        st.subheader(f"Policies — {_short_name(selected_chain.source_arn)} (Source)")
-        source_policies = _get_identity_policies(selected_chain.source_arn, env_model)
-        if source_policies:
-            st.dataframe(
-                [{"Policy": p["name"], "Type": p["type"]} for p in source_policies],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.caption("None")
+    # Tab: Attack Paths (existing content)
+    with tab_paths:
+        st.subheader(f"Chain {path_id}")
+        st.code(_chain_viz_text(selected_chain, path_id), language=None)
 
-        st.subheader(f"Policies — {_short_name(selected_chain.final_target_arn)} (Final target)")
-        target_policies = _get_identity_policies(selected_chain.final_target_arn, env_model)
-        if target_policies:
-            st.dataframe(
-                [{"Policy": p["name"], "Type": p["type"]} for p in target_policies],
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.caption("None")
+        # Details
+        if selected_chain.hop_count == 1:
+            edge = selected_chain.edges[0]
+            st.subheader("Path details")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Attack type", _action_name(edge.edge_type.value))
+                st.metric("Source", _short_name(edge.source_arn))
+                st.metric("Target", _short_name(edge.target_arn))
+                st.metric("Target type", _arn_type(edge.target_arn))
+            with col2:
+                st.metric("Detection cost", f"{edge.detection_cost:.4f}")
+                st.metric("Success probability", f"{edge.success_probability:.0%}")
+                st.metric("Guardrail status", edge.guardrail_status.title())
+                st.metric("API actions", ", ".join(edge.api_actions) if edge.api_actions else "—")
+            if edge.notes:
+                st.caption("Notes")
+                st.text(edge.notes)
 
-        label, resource_policy = _get_resource_policy(selected_chain.final_target_arn, env_model)
-        if label and resource_policy:
-            st.subheader(f"{label} — {_short_name(selected_chain.final_target_arn)}")
-            st.json(resource_policy)
-
-    # Explanation section
-    st.divider()
-    st.subheader("Explanation")
-    ap_key = path_id.upper()
-    cached = load_explanation(case_name, ap_key)
-    if cached:
-        st.caption("(cached)")
-        st.markdown(cached)
-        explanation_text = cached
-    else:
-        with st.spinner("Generating explanation..."):
-            if selected_chain.hop_count == 1:
-                explanation_text = asyncio.run(
-                    _generate_single_hop_explanation(selected_chain.edges[0], env_model)
+            st.subheader(f"Policies — {_short_name(edge.source_arn)} (Source)")
+            source_policies = _get_identity_policies(edge.source_arn, env_model)
+            if source_policies:
+                st.dataframe(
+                    [{"Policy": p["name"], "Type": p["type"]} for p in source_policies],
+                    use_container_width=True,
+                    hide_index=True,
                 )
             else:
-                explanation_text = _generate_multi_hop_explanation(selected_chain)
-            save_explanation(case_name, ap_key, explanation_text)
-        st.markdown(explanation_text)
+                st.caption("None")
 
-    # Q&A section
-    st.divider()
-    st.subheader("Ask about this attack path")
-    api_key_from_env = __import__("os").environ.get("OPENAI_API_KEY", "")
-    api_key_override = st.text_input(
-        "OpenAI API key (optional — used if env var not set)",
-        type="password",
-        placeholder="sk-...",
-        key="api_key_input",
-        help="Paste your key here if OPENAI_API_KEY isn't inherited by the GUI.",
-    )
-    api_key = api_key_from_env or (api_key_override or "")
-    if not api_key:
-        st.info("Set `OPENAI_API_KEY` in your environment, or paste your key above to enable Q&A.")
-    else:
-        chat_key = f"chat_{case_name}_{path_id}"
-        if chat_key not in st.session_state:
-            st.session_state[chat_key] = []
+            st.subheader(f"Policies — {_short_name(edge.target_arn)} (Target)")
+            target_policies = _get_identity_policies(edge.target_arn, env_model)
+            if target_policies:
+                st.dataframe(
+                    [{"Policy": p["name"], "Type": p["type"]} for p in target_policies],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("None")
 
-        for msg in st.session_state[chat_key]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+            label, resource_policy = _get_resource_policy(edge.target_arn, env_model)
+            if label and resource_policy:
+                st.subheader(f"{label} — {_short_name(edge.target_arn)}")
+                st.json(resource_policy)
+        else:
+            # Multi-hop
+            st.subheader("Chain summary")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Chain", selected_chain.summary_text)
+                st.metric("Final target", _short_name(selected_chain.final_target_arn))
+                st.metric("Final target type", _arn_type(selected_chain.final_target_arn))
+            with col2:
+                st.metric("Total detection cost", f"{selected_chain.total_detection_cost:.4f}")
+                st.metric("Combined success", f"{selected_chain.total_success_probability:.0%}")
 
-        if prompt := st.chat_input("Ask a question about this attack path..."):
-            st.session_state[chat_key].append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
+            st.subheader("Chain steps")
+            steps_data = []
+            for i, edge in enumerate(selected_chain.edges):
+                steps_data.append({
+                    "Hop": i + 1,
+                    "Action": _action_name(edge.edge_type.value),
+                    "From": _short_name(edge.source_arn),
+                    "To": _short_name(edge.target_arn),
+                    "Cost": f"{edge.detection_cost:.4f}",
+                    "Success": f"{edge.success_probability:.0%}",
+                })
+            st.dataframe(steps_data, use_container_width=True, hide_index=True)
 
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    context = _build_attack_context(
-                        selected_chain, env_model, explanation_text
+            st.subheader(f"Policies — {_short_name(selected_chain.source_arn)} (Source)")
+            source_policies = _get_identity_policies(selected_chain.source_arn, env_model)
+            if source_policies:
+                st.dataframe(
+                    [{"Policy": p["name"], "Type": p["type"]} for p in source_policies],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("None")
+
+            st.subheader(f"Policies — {_short_name(selected_chain.final_target_arn)} (Final target)")
+            target_policies = _get_identity_policies(selected_chain.final_target_arn, env_model)
+            if target_policies:
+                st.dataframe(
+                    [{"Policy": p["name"], "Type": p["type"]} for p in target_policies],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("None")
+
+            label, resource_policy = _get_resource_policy(selected_chain.final_target_arn, env_model)
+            if label and resource_policy:
+                st.subheader(f"{label} — {_short_name(selected_chain.final_target_arn)}")
+                st.json(resource_policy)
+
+        st.divider()
+        st.subheader("Explanation")
+        ap_key = path_id.upper()
+        cached = load_explanation(case_name, ap_key)
+        if cached:
+            st.caption("(cached)")
+            st.markdown(cached)
+            explanation_text = cached
+        else:
+            with st.spinner("Generating explanation..."):
+                if selected_chain.hop_count == 1:
+                    explanation_text = asyncio.run(
+                        _generate_single_hop_explanation(selected_chain.edges[0], env_model)
                     )
-                    reply = asyncio.run(
-                        _ask_ai_about_path(
-                            prompt, context, st.session_state[chat_key][:-1], api_key
-                        )
-                    )
-                st.markdown(reply)
-            st.session_state[chat_key].append({"role": "assistant", "content": reply})
-            st.rerun()
+                else:
+                    explanation_text = _generate_multi_hop_explanation(selected_chain)
+                save_explanation(case_name, ap_key, explanation_text)
+            st.markdown(explanation_text)
 
-        if st.session_state[chat_key]:
-            if st.button("Clear chat", key=f"clear_{chat_key}"):
+        st.divider()
+        st.subheader("Ask about this attack path")
+        if not api_key:
+            st.info("Set `OPENAI_API_KEY` in your environment, or paste your key above to enable Q&A.")
+        else:
+            chat_key = f"chat_{case_name}_{path_id}"
+            if chat_key not in st.session_state:
                 st.session_state[chat_key] = []
+
+            for msg in st.session_state[chat_key]:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            if prompt := st.chat_input("Ask a question about this attack path..."):
+                st.session_state[chat_key].append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        context = _build_attack_context(
+                            selected_chain, env_model, explanation_text
+                        )
+                        reply = asyncio.run(
+                            _ask_ai_about_path(
+                                prompt, context, st.session_state[chat_key][:-1], api_key
+                            )
+                        )
+                    st.markdown(reply)
+                st.session_state[chat_key].append({"role": "assistant", "content": reply})
                 st.rerun()
+
+            if st.session_state[chat_key]:
+                if st.button("Clear chat", key=f"clear_{chat_key}"):
+                    st.session_state[chat_key] = []
+                    st.rerun()
+
+    # Tab: Graph
+    with tab_graph:
+        st.subheader("Attack graph")
+        html_graph = _render_pyvis_graph(attack_edges, source_identity)
+        if html_graph:
+            st.components.v1.html(html_graph, height=550, scrolling=True)
+        else:
+            st.info("Install `pyvis` to enable interactive graph: `pip install pyvis`")
+
+    # Tab: Permissions (identity × technique matrix)
+    with tab_perms:
+        st.subheader("Permission matrix — What can I do with these permissions?")
+        sources = list({e.source_arn for e in attack_edges})
+        techniques: dict[str, set[str]] = {}
+        for e in attack_edges:
+            src = _short_name(e.source_arn)
+            tech = _action_name(e.edge_type.value)
+            techniques.setdefault(src, set()).add(tech)
+        rows = []
+        for src in sorted(techniques.keys()):
+            for tech in sorted(techniques[src]):
+                rows.append({"Identity": src, "Technique": tech})
+        if rows:
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No permission data.")
+
+    # Tab: Pattern registry
+    with tab_patterns:
+        st.subheader("Attack pattern registry")
+        patterns = load_attack_patterns()
+        filter_svc = st.text_input("Filter by service or permission", key="pattern_filter")
+        pattern_rows = []
+        for p in patterns:
+            perms = ", ".join(p.get("required_permissions", []))
+            if filter_svc and filter_svc.lower() not in (perms + p.get("id", "")).lower():
+                continue
+            pattern_rows.append({
+                "ID": p.get("id", ""),
+                "Edge type": p.get("edge_type", ""),
+                "Permissions": perms,
+                "Target": p.get("target_type", ""),
+                "Success": f"{p.get('success_probability', 0) * 100:.0f}%",
+                "Notes": (p.get("notes", "") or "")[:60],
+            })
+        if pattern_rows:
+            st.dataframe(pattern_rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No patterns match filter.")
 
     # Sidebar metadata
     with st.sidebar:

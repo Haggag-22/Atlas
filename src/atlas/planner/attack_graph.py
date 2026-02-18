@@ -32,6 +32,7 @@ from atlas.core.permission_map import (
     _has_blocking_condition,
 )
 from atlas.core.types import EdgeType, NodeType, NoiseLevel
+from atlas.knowledge.api_profiles import load_attack_patterns
 from atlas.planner.detection import DetectionScorer
 
 logger = structlog.get_logger(__name__)
@@ -255,7 +256,7 @@ class AttackGraphBuilder:
         self._add_post_exploitation_persistence_edges(ag)
         self._add_guardduty_evasion_edges(ag)
         self._add_cloudtrail_evasion_edges(ag)
-        self._add_stratus_technique_edges(ag)
+        self._add_pattern_driven_edges(ag)
 
         logger.info("attack_graph_built", **ag.summary())
         return ag
@@ -3870,7 +3871,132 @@ class AttackGraphBuilder:
                     ))
 
     # ==================================================================
-    # ATTACK PATH 30: Stratus Red Team Techniques (not previously covered)
+    # ATTACK PATH 30: Pattern-driven edges (from attack_patterns.yaml)
+    # ==================================================================
+    def _add_pattern_driven_edges(self, ag: AttackGraph) -> None:
+        """Add attack edges from the pattern registry.
+
+        Matches identity permissions against each pattern's required_permissions.
+        When all required permissions are present, adds the corresponding edge.
+        Replaces hardcoded Stratus technique logic with YAML-driven patterns.
+        """
+        patterns = load_attack_patterns()
+        if not patterns:
+            return
+
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        account_nodes = self._env.nodes_of_type(NodeType.ACCOUNT)
+        root_targets = [
+            a for a in account_nodes
+            if a.endswith(":root") and ":root" in a and not a.endswith("aws:root")
+        ]
+
+        # Map string types from YAML to NodeType
+        def _node_type_for(s: str) -> NodeType | None:
+            try:
+                return NodeType(s)
+            except ValueError:
+                return None
+
+        # Map string to EdgeType (skip if not in enum)
+        def _edge_type_for(s: str) -> EdgeType | None:
+            try:
+                return EdgeType(s)
+            except ValueError:
+                return None
+
+        for pattern in patterns:
+            edge_type = _edge_type_for(pattern.get("edge_type", ""))
+            if not edge_type:
+                continue
+
+            required = pattern.get("required_permissions", [])
+            if not required:
+                continue
+
+            target_type = pattern.get("target_type", "account")
+            target_resource_type = pattern.get("target_resource_type")
+            target_identity_type = pattern.get("target_identity_type")
+            target_resolution = pattern.get("target_resolution", "self")
+            target_role_key = pattern.get("target_role_key", "role_arn")
+            prob = float(pattern.get("success_probability", 0.85))
+            notes = pattern.get("notes", "")
+
+            # Resolve target ARNs
+            targets: list[str] = []
+            if target_type == "account":
+                targets = root_targets
+            elif target_type == "resource" and target_resource_type:
+                nt = _node_type_for(target_resource_type)
+                if nt:
+                    targets = self._env.nodes_of_type(nt)
+            elif target_type == "identity" and target_identity_type:
+                nt = _node_type_for(target_identity_type)
+                if nt:
+                    targets = self._env.nodes_of_type(nt)
+
+            if not targets:
+                continue
+
+            for source in identities:
+                for target in targets:
+                    # Permission check: all required, with resource_arn when applicable
+                    resource_arn = target if target_type in ("identity", "resource") else "*"
+                    has_all = all(
+                        self._identity_has_permission(
+                            source, perm, resource_arn=resource_arn,
+                        )
+                        for perm in required
+                    )
+                    if not has_all:
+                        continue
+
+                    # Resolve final target for role_arn resolution
+                    final_target = target
+                    if target_type == "resource" and target_resolution == "role_arn":
+                        data = self._env.get_node_data(target)
+                        role_arn = data.get(target_role_key) or data.get("role_arn")
+                        if not role_arn:
+                            continue
+                        final_target = role_arn
+
+                    detection = sum(self._scorer.score(a) for a in required)
+                    conf = 1.0
+                    if self._pmap and len(required) == 1:
+                        conf = self._get_permission_confidence_multiplier(
+                            source, required[0], resource_arn,
+                        )
+                    elif self._pmap and required:
+                        conf = min(
+                            self._get_permission_confidence_multiplier(
+                                source, r, resource_arn,
+                            )
+                            for r in required
+                        )
+                    success_prob = prob * conf
+
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=final_target,
+                        edge_type=edge_type,
+                        required_permissions=required,
+                        api_actions=required,
+                        detection_cost=detection,
+                        success_probability=success_prob,
+                        noise_level=self._scorer.get_noise_level(required[0]),
+                        guardrail_status="clear",
+                        notes=notes or f"Pattern: {pattern.get('id', '')}",
+                    ))
+
+                    # Account-level: one edge per source (no need to repeat for each root)
+                    if target_type == "account":
+                        break
+
+    # ==================================================================
+    # ATTACK PATH 31: Stratus Red Team Techniques (legacy, kept for fallback)
     # ==================================================================
     def _add_stratus_technique_edges(self, ag: AttackGraph) -> None:
         """Add edges for Stratus techniques: EC2 password, share, evasion, etc."""

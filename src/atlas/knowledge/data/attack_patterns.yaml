@@ -1,0 +1,491 @@
+# =============================================================================
+# Atlas Attack Pattern Registry — Permission → Technique Mapping
+# =============================================================================
+#
+# Patterns are matched against identity permissions. When an identity has ALL
+# required_permissions, the corresponding attack edge is added.
+#
+# Flow: permissions (from PermissionMap) → pattern match → attack edge
+#
+# Target types:
+#   account:     identity -> account root (e.g. CloudTrail evasion)
+#   resource:    identity -> resource node (e.g. S3 bucket, EC2 instance)
+#   identity:    identity -> another identity (e.g. CreateAccessKey -> target user)
+#
+# Target resolution for resources:
+#   self:        edge goes to the resource itself (identity -> resource)
+#   role_arn:    edge goes to resource's execution role (identity -> role)
+#
+# =============================================================================
+
+patterns:
+
+  # -------------------------------------------------------------------------
+  # IAM Privilege Escalation
+  # -------------------------------------------------------------------------
+  - id: create_access_key
+    edge_type: can_create_key
+    required_permissions: [iam:CreateAccessKey]
+    target_type: identity
+    target_identity_type: iam_user
+    success_probability: 0.90
+    notes: "CreateAccessKey — create credentials for target user."
+
+  - id: attach_user_policy
+    edge_type: can_attach_policy
+    required_permissions: [iam:AttachUserPolicy]
+    target_type: identity
+    target_identity_type: iam_user
+    success_probability: 0.90
+    notes: "AttachUserPolicy — attach managed policy to user."
+
+  - id: attach_role_policy
+    edge_type: can_attach_policy
+    required_permissions: [iam:AttachRolePolicy]
+    target_type: identity
+    target_identity_type: iam_role
+    success_probability: 0.90
+    notes: "AttachRolePolicy — attach managed policy to role."
+
+  - id: attach_group_policy
+    edge_type: can_attach_policy
+    required_permissions: [iam:AttachGroupPolicy]
+    target_type: identity
+    target_identity_type: iam_group
+    success_probability: 0.90
+    notes: "AttachGroupPolicy — attach managed policy to group."
+
+  - id: put_user_policy
+    edge_type: can_put_policy
+    required_permissions: [iam:PutUserPolicy]
+    target_type: identity
+    target_identity_type: iam_user
+    success_probability: 0.90
+    notes: "PutUserPolicy — inline policy on user."
+
+  - id: put_role_policy
+    edge_type: can_put_policy
+    required_permissions: [iam:PutRolePolicy]
+    target_type: identity
+    target_identity_type: iam_role
+    success_probability: 0.90
+    notes: "PutRolePolicy — inline policy on role."
+
+  - id: put_group_policy
+    edge_type: can_put_policy
+    required_permissions: [iam:PutGroupPolicy]
+    target_type: identity
+    target_identity_type: iam_group
+    success_probability: 0.90
+    notes: "PutGroupPolicy — inline policy on group."
+
+  - id: modify_trust
+    edge_type: can_modify_trust
+    required_permissions: [iam:UpdateAssumeRolePolicy]
+    target_type: identity
+    target_identity_type: iam_role
+    success_probability: 0.85
+    notes: "UpdateAssumeRolePolicy — backdoor role trust."
+
+  - id: create_login_profile
+    edge_type: can_create_login_profile
+    required_permissions: [iam:CreateLoginProfile]
+    target_type: identity
+    target_identity_type: iam_user
+    success_probability: 0.90
+    notes: "CreateLoginProfile — set console password for user."
+
+  - id: update_login_profile
+    edge_type: can_update_login_profile
+    required_permissions: [iam:UpdateLoginProfile]
+    target_type: identity
+    target_identity_type: iam_user
+    success_probability: 0.90
+    notes: "UpdateLoginProfile — change console password."
+
+  - id: add_user_to_group
+    edge_type: can_add_user_to_group
+    required_permissions: [iam:AddUserToGroup]
+    target_type: identity
+    target_identity_type: iam_group
+    success_probability: 0.90
+    notes: "AddUserToGroup — add self to group."
+
+  - id: create_policy_version
+    edge_type: can_create_policy_version
+    required_permissions: [iam:CreatePolicyVersion]
+    target_type: identity
+    target_identity_type: iam_policy
+    success_probability: 0.85
+    notes: "CreatePolicyVersion — escalate via policy."
+
+  - id: set_default_policy_version
+    edge_type: can_set_default_policy_version
+    required_permissions: [iam:SetDefaultPolicyVersion]
+    target_type: identity
+    target_identity_type: iam_policy
+    success_probability: 0.80
+    notes: "SetDefaultPolicyVersion — revert to older version."
+
+  - id: create_admin_user
+    edge_type: can_create_admin_user
+    required_permissions: [iam:CreateUser, iam:AttachUserPolicy]
+    target_type: account
+    success_probability: 0.90
+    notes: "CreateUser + AttachUserPolicy(AdministratorAccess)."
+
+  - id: create_backdoor_role
+    edge_type: can_create_backdoor_role
+    required_permissions: [iam:CreateRole, iam:AttachRolePolicy]
+    target_type: account
+    success_probability: 0.90
+    notes: "CreateRole(external trust) + AttachRolePolicy(AdministratorAccess)."
+
+  # -------------------------------------------------------------------------
+  # Lambda
+  # -------------------------------------------------------------------------
+  - id: lambda_code_injection
+    edge_type: can_update_lambda
+    required_permissions: [lambda:UpdateFunctionCode]
+    target_type: resource
+    target_resource_type: lambda_function
+    target_resolution: role_arn
+    success_probability: 0.80
+    notes: "Lambda code injection — steal execution role creds."
+
+  - id: lambda_config_update
+    edge_type: can_update_lambda_config
+    required_permissions: [lambda:UpdateFunctionConfiguration]
+    target_type: resource
+    target_resource_type: lambda_function
+    target_resolution: role_arn
+    success_probability: 0.85
+    notes: "Lambda config/layer update — exfil env vars."
+
+  - id: lambda_backdoor
+    edge_type: can_backdoor_lambda
+    required_permissions: [lambda:AddPermission, lambda:InvokeFunction]
+    target_type: resource
+    target_resource_type: lambda_function
+    target_resolution: role_arn
+    success_probability: 0.85
+    notes: "Lambda AddPermission(principal=*) — external invoke."
+
+  - id: lambda_credential_theft
+    edge_type: can_steal_lambda_creds
+    required_permissions: [lambda:GetFunction]
+    target_type: resource
+    target_resource_type: lambda_function
+    target_resolution: role_arn
+    success_probability: 0.70
+    notes: "Lambda GetFunction — SSRF/XXE to steal role creds."
+
+  # -------------------------------------------------------------------------
+  # S3
+  # -------------------------------------------------------------------------
+  - id: s3_read
+    edge_type: can_read_s3
+    required_permissions: [s3:GetObject]
+    target_type: resource
+    target_resource_type: s3_bucket
+    target_resolution: self
+    success_probability: 0.95
+    notes: "S3 read access."
+
+  - id: s3_write
+    edge_type: can_write_s3
+    required_permissions: [s3:PutObject]
+    target_type: resource
+    target_resource_type: s3_bucket
+    target_resolution: self
+    success_probability: 0.95
+    notes: "S3 write access."
+
+  # -------------------------------------------------------------------------
+  # EC2
+  # -------------------------------------------------------------------------
+  - id: read_userdata
+    edge_type: can_read_userdata
+    required_permissions: [ec2:DescribeInstanceAttribute]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.95
+    notes: "EC2 user data disclosure."
+
+  - id: modify_userdata
+    edge_type: can_modify_userdata
+    required_permissions: [ec2:ModifyInstanceAttribute]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.85
+    notes: "EC2 user data injection."
+
+  # IMDS credential theft: complex (needs imds_v2_required, instance_profile resolution)
+  # Kept in custom _add_imds_credential_theft_edges
+
+  - id: ssm_session
+    edge_type: can_ssm_session
+    required_permissions: [ssm:SendCommand]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.90
+    notes: "SSM SendCommand — remote execution."
+
+  - id: ssm_start_session
+    edge_type: can_ssm_session
+    required_permissions: [ssm:StartSession]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.90
+    notes: "SSM StartSession — interactive shell."
+
+  - id: snapshot_volume
+    edge_type: can_snapshot_volume
+    required_permissions: [ec2:CreateSnapshot]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.85
+    notes: "EC2 volume snapshot — loot data."
+
+  - id: get_password_data
+    edge_type: can_get_ec2_password_data
+    required_permissions: [ec2:GetPasswordData]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.85
+    notes: "EC2 GetPasswordData — Windows instance password."
+
+  - id: ec2_instance_connect
+    edge_type: can_ec2_instance_connect
+    required_permissions: [ec2-instance-connect:SendSSHPublicKey]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.80
+    notes: "EC2 Instance Connect — 60s SSH access."
+
+  - id: ec2_serial_console
+    edge_type: can_ec2_serial_console_ssh
+    required_permissions: [ec2-instance-connect:SendSerialConsoleSSHPublicKey]
+    target_type: resource
+    target_resource_type: ec2_instance
+    target_resolution: self
+    success_probability: 0.75
+    notes: "EC2 Serial Console — serial access."
+
+  # -------------------------------------------------------------------------
+  # EBS Snapshots
+  # -------------------------------------------------------------------------
+  - id: loot_public_snapshot
+    edge_type: can_loot_snapshot
+    required_permissions: [ec2:DescribeSnapshots]
+    target_type: resource
+    target_resource_type: ebs_snapshot
+    target_resolution: self
+    success_probability: 0.95
+    notes: "Public EBS snapshot loot."
+
+  - id: share_ebs_snapshot
+    edge_type: can_share_ebs_snapshot
+    required_permissions: [ec2:ModifySnapshotAttribute]
+    target_type: resource
+    target_resource_type: ebs_snapshot
+    target_resolution: self
+    success_probability: 0.90
+    notes: "Share EBS snapshot with external account."
+
+  # -------------------------------------------------------------------------
+  # CodeBuild / Beanstalk
+  # -------------------------------------------------------------------------
+  - id: codebuild_env_theft
+    edge_type: can_read_codebuild_env
+    required_permissions: [codebuild:BatchGetProjects]
+    target_type: resource
+    target_resource_type: codebuild_project
+    target_resolution: role_arn
+    target_role_key: service_role_arn
+    success_probability: 0.85
+    notes: "CodeBuild env vars — credential theft."
+
+  - id: beanstalk_env_theft
+    edge_type: can_read_beanstalk_env
+    required_permissions: [elasticbeanstalk:DescribeConfigurationSettings]
+    target_type: resource
+    target_resource_type: elasticbeanstalk_environment
+    target_resolution: self
+    success_probability: 0.80
+    notes: "Beanstalk config — credential theft via option settings."
+
+  # -------------------------------------------------------------------------
+  # ECS
+  # -------------------------------------------------------------------------
+  - id: ecs_task_credential_theft
+    edge_type: can_steal_ecs_task_creds
+    required_permissions: [ecs:DescribeTaskDefinition]
+    target_type: resource
+    target_resource_type: ecs_task_definition
+    target_resolution: role_arn
+    target_role_key: task_role_arn
+    success_probability: 0.80
+    notes: "ECS task role — container metadata theft."
+
+  # -------------------------------------------------------------------------
+  # Bedrock
+  # -------------------------------------------------------------------------
+  # Bedrock agent hijacking: complex (needs agent->action group->Lambda resolution)
+  # Kept in custom _add_bedrock_agent_hijacking_edges
+
+  # -------------------------------------------------------------------------
+  # Cognito
+  # -------------------------------------------------------------------------
+  - id: cognito_self_signup
+    edge_type: can_self_signup_cognito
+    required_permissions: [cognito-idp:SignUp]
+    target_type: resource
+    target_resource_type: cognito_user_pool
+    target_resolution: self
+    success_probability: 0.80
+    notes: "Cognito self-signup — create user."
+
+  - id: cognito_identity_pool_creds
+    edge_type: can_obtain_creds_via_cognito_identity_pool
+    required_permissions: [cognito-identity:GetCredentialsForIdentity]
+    target_type: resource
+    target_resource_type: cognito_identity_pool
+    target_resolution: self
+    success_probability: 0.85
+    notes: "Cognito identity pool — temp creds."
+
+  # -------------------------------------------------------------------------
+  # Persistence
+  # -------------------------------------------------------------------------
+  - id: get_federation_token
+    edge_type: can_get_federation_token
+    required_permissions: [sts:GetFederationToken]
+    target_type: account
+    success_probability: 0.95
+    notes: "GetFederationToken — survive key deletion."
+
+  - id: roles_anywhere_persistence
+    edge_type: can_create_roles_anywhere_persistence
+    required_permissions: [rolesanywhere:CreateTrustAnchor]
+    target_type: account
+    success_probability: 0.90
+    notes: "Roles Anywhere trust anchor — cert-based persistence."
+
+  # -------------------------------------------------------------------------
+  # CloudTrail Evasion
+  # -------------------------------------------------------------------------
+  - id: cloudtrail_stop
+    edge_type: can_stop_cloudtrail
+    required_permissions: [cloudtrail:DescribeTrails, cloudtrail:StopLogging]
+    target_type: account
+    success_probability: 0.90
+    notes: "CloudTrail evasion — stop logging."
+
+  - id: cloudtrail_delete
+    edge_type: can_delete_cloudtrail
+    required_permissions: [cloudtrail:DescribeTrails, cloudtrail:DeleteTrail]
+    target_type: account
+    success_probability: 0.90
+    notes: "CloudTrail evasion — delete trail."
+
+  - id: cloudtrail_update_config
+    edge_type: can_update_cloudtrail_config
+    required_permissions: [cloudtrail:DescribeTrails, cloudtrail:UpdateTrail]
+    target_type: account
+    success_probability: 0.85
+    notes: "CloudTrail evasion — update trail config."
+
+  - id: cloudtrail_event_selectors
+    edge_type: can_modify_cloudtrail_event_selectors
+    required_permissions: [cloudtrail:DescribeTrails, cloudtrail:PutEventSelectors]
+    target_type: account
+    success_probability: 0.85
+    notes: "CloudTrail evasion — PutEventSelectors."
+
+  - id: cloudtrail_bucket_lifecycle
+    edge_type: can_modify_cloudtrail_bucket_lifecycle
+    required_permissions: [s3:PutBucketLifecycleConfiguration]
+    target_type: account
+    success_probability: 0.80
+    notes: "CloudTrail evasion — S3 lifecycle on log bucket."
+
+  # -------------------------------------------------------------------------
+  # Stratus / Other Techniques
+  # -------------------------------------------------------------------------
+  - id: open_security_group_ingress
+    edge_type: can_open_security_group_ingress
+    required_permissions: [ec2:AuthorizeSecurityGroupIngress]
+    target_type: account
+    success_probability: 0.90
+    notes: "Open security group port 22."
+
+  - id: share_ami
+    edge_type: can_share_ami
+    required_permissions: [ec2:ModifyImageAttribute, ec2:DescribeImages]
+    target_type: account
+    success_probability: 0.90
+    notes: "Share AMI with external account."
+
+  - id: share_rds_snapshot
+    edge_type: can_share_rds_snapshot
+    required_permissions: [rds:ModifyDBSnapshotAttribute]
+    target_type: account
+    success_probability: 0.90
+    notes: "Share RDS snapshot with external account."
+
+  - id: invoke_bedrock_model
+    edge_type: can_invoke_bedrock_model
+    required_permissions: [bedrock:InvokeModel]
+    target_type: account
+    success_probability: 0.95
+    notes: "Bedrock InvokeModel — LLMjacking."
+
+  - id: delete_dns_logs
+    edge_type: can_delete_dns_logs
+    required_permissions: [route53resolver:DeleteResolverQueryLogConfig]
+    target_type: account
+    success_probability: 0.85
+    notes: "Delete DNS query logging."
+
+  - id: leave_organization
+    edge_type: can_leave_organization
+    required_permissions: [organizations:LeaveOrganization]
+    target_type: account
+    success_probability: 0.95
+    notes: "Leave AWS Organization."
+
+  - id: remove_vpc_flow_logs
+    edge_type: can_remove_vpc_flow_logs
+    required_permissions: [ec2:DeleteFlowLogs]
+    target_type: account
+    success_probability: 0.90
+    notes: "Remove VPC flow logs."
+
+  - id: enumerate_ses
+    edge_type: can_enumerate_ses
+    required_permissions: [ses:ListIdentities]
+    target_type: account
+    success_probability: 0.95
+    notes: "Enumerate SES identities."
+
+  - id: sagemaker_lifecycle
+    edge_type: can_modify_sagemaker_lifecycle
+    required_permissions: [sagemaker:UpdateNotebookInstanceLifecycleConfig]
+    target_type: account
+    success_probability: 0.85
+    notes: "SageMaker lifecycle config — inject on startup."
+
+  - id: eks_create_access_entry
+    edge_type: can_create_eks_access_entry
+    required_permissions: [eks:CreateAccessEntry]
+    target_type: account
+    success_probability: 0.90
+    notes: "EKS CreateAccessEntry — add IAM to cluster."
