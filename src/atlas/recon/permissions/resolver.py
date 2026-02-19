@@ -1961,6 +1961,7 @@ class PermissionResolverCollector(BaseCollector):
         BRUTEFORCE_PROBES = build_merged_probes()
         import asyncio as _asyncio
 
+        call_timeout = self._config.recon.bruteforce_call_timeout_seconds
         results = {"total": 0, "succeeded": 0, "denied": 0, "errors": 0,
                    "throttle_retries": 0}
         _bf_total_probes = len(BRUTEFORCE_PROBES) + 1
@@ -1987,7 +1988,8 @@ class PermissionResolverCollector(BaseCollector):
         first_trail: str = ""
         try:
             async with self._session.client("s3", region_name=region) as s3:
-                resp = await s3.list_buckets()
+                coro = s3.list_buckets()
+                resp = await (_asyncio.wait_for(coro, timeout=call_timeout) if call_timeout > 0 else coro)
                 buckets = resp.get("Buckets", [])
                 discovered_buckets = [b["Name"] for b in buckets]
                 if discovered_buckets:
@@ -2001,6 +2003,9 @@ class PermissionResolverCollector(BaseCollector):
                 ))
                 results["succeeded"] += 1
                 results["total"] += 1
+        except _asyncio.TimeoutError:
+            results["errors"] += 1
+            results["total"] += 1
         except Exception:
             profile.add_permission(PermissionEntry(
                 action="s3:ListBuckets",
@@ -2025,11 +2030,12 @@ class PermissionResolverCollector(BaseCollector):
             async with self._session.client(
                 "cloudtrail", region_name=region,
             ) as ct:
-                resp = await ct.describe_trails()
+                coro = ct.describe_trails()
+                resp = await (_asyncio.wait_for(coro, timeout=call_timeout) if call_timeout > 0 else coro)
                 trails = resp.get("trailList", [])
                 if trails:
                     first_trail = trails[0].get("Name", "")
-        except Exception:
+        except (_asyncio.TimeoutError, Exception):
             pass
 
         # Phase 1c: elasticbeanstalk:DescribeEnvironments — get app/env for DescribeConfigurationSettings
@@ -2039,12 +2045,13 @@ class PermissionResolverCollector(BaseCollector):
             async with self._session.client(
                 "elasticbeanstalk", region_name=region,
             ) as eb:
-                resp = await eb.describe_environments(MaxRecords=1)
+                coro = eb.describe_environments(MaxRecords=1)
+                resp = await (_asyncio.wait_for(coro, timeout=call_timeout) if call_timeout > 0 else coro)
                 envs = resp.get("Environments", [])
                 if envs:
                     first_beanstalk_app = envs[0].get("ApplicationName", "")
                     first_beanstalk_env = envs[0].get("EnvironmentName", "")
-        except Exception:
+        except (_asyncio.TimeoutError, Exception):
             pass
 
         # ── Error classification helper ───────────────────────────────
@@ -2083,7 +2090,10 @@ class PermissionResolverCollector(BaseCollector):
             for attempt in range(max_retries + 1):
                 try:
                     api_method = getattr(client, method)
-                    return await api_method(**kwargs)
+                    coro = api_method(**kwargs)
+                    if call_timeout > 0:
+                        return await _asyncio.wait_for(coro, timeout=call_timeout)
+                    return await coro
                 except ClientError as exc:
                     code = exc.response.get("Error", {}).get("Code", "")
                     if code in self._THROTTLE_CODES and attempt < max_retries:
@@ -2217,6 +2227,14 @@ class PermissionResolverCollector(BaseCollector):
                         error_code=error_code, http=http_status,
                     )
 
+                except _asyncio.TimeoutError:
+                    results["errors"] += 1
+                    logger.debug(
+                        "bf_probe_timeout",
+                        action=action,
+                        timeout_seconds=call_timeout,
+                    )
+
                 except Exception as exc:
                     results["errors"] += 1
                     logger.debug(
@@ -2325,6 +2343,8 @@ class PermissionResolverCollector(BaseCollector):
         if not discovered_buckets:
             return
 
+        call_timeout = self._config.recon.bruteforce_call_timeout_seconds
+
         has_any_s3 = any(
             e.allowed and e.confidence == PermissionConfidence.CONFIRMED
             for a, e in profile.permissions.items()
@@ -2340,7 +2360,8 @@ class PermissionResolverCollector(BaseCollector):
                 async with self._session.client("s3", region_name=region) as s3:
                     # ListObjectsV2 → s3:ListBucket on this bucket
                     try:
-                        await s3.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+                        coro = s3.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+                        await (asyncio.wait_for(coro, timeout=call_timeout) if call_timeout > 0 else coro)
                         profile.add_permission(PermissionEntry(
                             action="s3:ListBucket",
                             allowed=True,
@@ -2355,10 +2376,11 @@ class PermissionResolverCollector(BaseCollector):
 
                     # HeadObject with fake key → 404 proves s3:GetObject
                     try:
-                        await s3.head_object(
+                        coro = s3.head_object(
                             Bucket=bucket_name,
                             Key="__atlas_probe_nonexistent__",
                         )
+                        await (asyncio.wait_for(coro, timeout=call_timeout) if call_timeout > 0 else coro)
                     except ClientError as exc:
                         code = exc.response.get("Error", {}).get("Code", "")
                         if code in ("404", "NoSuchKey"):

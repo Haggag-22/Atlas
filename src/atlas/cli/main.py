@@ -1577,6 +1577,8 @@ def _noise_label(noise: str) -> str:
 
 
 def _arn_type(arn: str) -> str:
+    if arn.startswith("external::"):
+        return "External"
     if ":user/" in arn:
         return "User"
     if ":role/" in arn:
@@ -1599,6 +1601,11 @@ def _arn_type(arn: str) -> str:
 
 
 def _short_name(arn: str, max_len: int = 35) -> str:
+    if arn.startswith("external::"):
+        label = {"external::ec2-imds-ssrf": "External (EC2 IMDS SSRF)"}.get(
+            arn, arn.replace("external::", "External: ")
+        )
+        return label[:max_len] + "..." if len(label) > max_len else label
     name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
     if len(name) > max_len:
         name = name[: max_len - 3] + "..."
@@ -1831,11 +1838,35 @@ async def _explain_attack_path(edge: Any, env_model: Any) -> None:
 # Attack Paths table (now chain-aware)
 # ═══════════════════════════════════════════════════════════════════════════
 def _show_attack_paths(attack_graph: Any, source_arn: str) -> dict[str, Any]:
-    """Discover and display attack chains (single + multi-hop)."""
+    """Discover and display attack chains (single + multi-hop).
+
+    Includes chains from current identity and from external entry points
+    (e.g. external::ec2-imds-ssrf for CloudGoat cloud_breach_s3).
+    """
     from atlas.planner.chain_finder import ChainFinder
 
     finder = ChainFinder(attack_graph, max_depth=4, max_chains=50)
     chains = finder.find_chains(source_arn)
+
+    # Also find chains from external entry points (anonymous attacker scenarios)
+    external_sources = ["external::ec2-imds-ssrf"]
+    for ext in external_sources:
+        if attack_graph.raw.has_node(ext) and attack_graph.raw.out_degree(ext) > 0:
+            ext_chains = finder.find_chains(ext)
+            # Deduplicate by (final_target, edge sequence)
+            seen = {(c.final_target_arn, tuple(e.edge_type.value for e in c.edges)) for c in chains}
+            for c in ext_chains:
+                key = (c.final_target_arn, tuple(e.edge_type.value for e in c.edges))
+                if key not in seen:
+                    seen.add(key)
+                    chains.append(c)
+
+    # Sort by detection cost, then by source (external first for visibility)
+    def _chain_sort_key(c: Any) -> tuple[float, int]:
+        from_priority = 0 if c.source_arn.startswith("external::") else 1
+        return (c.total_detection_cost, from_priority)
+
+    chains.sort(key=_chain_sort_key)
 
     if not chains:
         console.print("\n[red]No attack paths found from current identity.[/red]")

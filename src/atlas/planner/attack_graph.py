@@ -236,6 +236,7 @@ class AttackGraphBuilder:
         self._add_key_account_decode_edges(ag)
         self._add_public_snapshot_edges(ag)
         self._add_imds_credential_theft_edges(ag)
+        self._add_external_ec2_imds_ssrf_edges(ag)
         self._add_ssm_session_edges(ag)
         self._add_volume_snapshot_edges(ag)
         self._add_userdata_injection_edges(ag)
@@ -1650,6 +1651,70 @@ class AttackGraphBuilder:
                     },
                     notes=" ".join(notes_parts),
                 ))
+
+    # ==================================================================
+    # ATTACK PATH 13b: External EC2 IMDS SSRF (CloudGoat cloud_breach_s3)
+    # Anonymous attacker → EC2 role via SSRF on misconfigured reverse proxy
+    # ==================================================================
+    def _add_external_ec2_imds_ssrf_edges(self, ag: AttackGraph) -> None:
+        """Add edges from external attacker to EC2 instance roles.
+
+        Models CloudGoat cloud_breach_s3: anonymous outsider with no AWS
+        credentials discovers EC2 IP (Shodan, DNS, etc.), exploits SSRF
+        in misconfigured reverse proxy to hit 169.254.169.254, steals
+        instance role credentials, then accesses S3.
+
+        Only for EC2 instances with public IP + IMDSv1 + instance profile.
+        No identity permissions required — attacker has none.
+        """
+        EXTERNAL = "external::ec2-imds-ssrf"
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+
+        for inst_arn in instances:
+            inst_data = self._env.get_node_data(inst_arn)
+            imds_v2_required = inst_data.get("imds_v2_required", True)
+            profile_arn = inst_data.get("instance_profile_arn")
+            public_ip = inst_data.get("public_ip")
+            state = inst_data.get("state", "unknown")
+            instance_id = inst_data.get(
+                "instance_id", inst_arn.split("/")[-1],
+            )
+
+            if imds_v2_required or not profile_arn or not public_ip:
+                continue
+            if state not in ("running", "unknown"):
+                continue
+
+            role_arn = self._resolve_instance_profile_role(
+                profile_arn, inst_arn,
+            )
+
+            notes = (
+                f"External IMDS SSRF — instance {instance_id} has public IP "
+                f"{public_ip}, IMDSv1, and instance profile. Anonymous attacker "
+                "can exploit SSRF in misconfigured reverse proxy (e.g. Host header "
+                "injection to 169.254.169.254) to steal role credentials. "
+                "CloudGoat cloud_breach_s3 scenario."
+            )
+
+            ag.add_edge(AttackEdge(
+                source_arn=EXTERNAL,
+                target_arn=role_arn,
+                edge_type=EdgeType.CAN_STEAL_IMDS_CREDS,
+                required_permissions=[],
+                api_actions=[],
+                detection_cost=0.0,
+                success_probability=0.80,
+                noise_level=NoiseLevel.LOW,
+                guardrail_status="clear",
+                conditions={
+                    "attack_vector": "external_ssrf",
+                    "instance_profile_arn": profile_arn,
+                    "instance_arn": inst_arn,
+                    "public_ip": public_ip,
+                },
+                notes=notes,
+            ))
 
     # ------------------------------------------------------------------
     # Helper: resolve instance profile ARN → role ARN

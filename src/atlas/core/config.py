@@ -138,6 +138,15 @@ class ReconConfig(BaseModel):
             "0 = no limit. Prevents long-running scans from blocking."
         ),
     )
+    bruteforce_call_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=300,
+        description=(
+            "Maximum seconds per individual API call during brute-force. "
+            "Prevents a single slow/hanging call from blocking progress."
+        ),
+    )
 
 
 class PlannerConfig(BaseModel):
