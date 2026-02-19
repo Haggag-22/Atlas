@@ -45,6 +45,7 @@ class NodeType(str, Enum):
     BACKUP_PLAN = "backup_plan"
     EBS_SNAPSHOT = "ebs_snapshot"
     ECS_TASK_DEFINITION = "ecs_task_definition"
+    EFS_FILE_SYSTEM = "efs_file_system"
     ECR_REPOSITORY = "ecr_repository"
     COGNITO_USER_POOL = "cognito_user_pool"
     COGNITO_IDENTITY_POOL = "cognito_identity_pool"
@@ -85,6 +86,9 @@ class EdgeType(str, Enum):
     CAN_MODIFY_USERDATA = "can_modify_userdata"  # identity -> ec2 instance (inject user data)
     CAN_STEAL_LAMBDA_CREDS = "can_steal_lambda_creds"  # identity -> role (via Lambda SSRF/XXE)
     CAN_STEAL_ECS_TASK_CREDS = "can_steal_ecs_task_creds"  # identity -> role (via ECS container RCE)
+    CAN_BACKDOOR_ECS_TASK = "can_backdoor_ecs_task"  # identity -> role (RegisterTaskDefinition + UpdateService)
+    CAN_ENABLE_SSM_VIA_TAGS = "can_enable_ssm_via_tags"  # identity -> ec2 (CreateTags + StartSession)
+    CAN_ACCESS_EFS_FROM_EC2 = "can_access_efs_from_ec2"  # ec2 instance -> efs (same VPC)
     CAN_READ_CODEBUILD_ENV = "can_read_codebuild_env"  # identity -> role (creds in CodeBuild env; CloudGoat codebuild_secrets)
     CAN_READ_BEANSTALK_ENV = "can_read_beanstalk_env"  # identity -> role (creds in Beanstalk config; CloudGoat beanstalk_secrets)
     CAN_HIJACK_BEDROCK_AGENT = "can_hijack_bedrock_agent"  # identity -> Lambda role (update Lambda used by agent; CloudGoat bedrock_agent_hijacking)

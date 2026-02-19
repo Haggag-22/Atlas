@@ -27,6 +27,7 @@ from atlas.core.models import (
     CognitoUserPool,
     EBSSnapshot,
     EC2Instance,
+    EFSFileSystem,
     ElasticBeanstalkEnvironment,
     ECRRepository,
     ECSTaskDefinition,
@@ -79,6 +80,7 @@ class ResourceCollector(BaseCollector):
             "codebuild_projects": 0,
             "elasticbeanstalk_environments": 0,
             "bedrock_agents": 0,
+            "efs_file_systems": 0,
             "skipped_no_permission": 0,
         }
         resource_types = self._config.recon.resource_types
@@ -141,6 +143,12 @@ class ResourceCollector(BaseCollector):
             stats["ecs_task_definitions"] = await self._collect_ecs(account_id, region)
         elif "ecs" in resource_types:
             logger.info("resource_skipped", service="ecs", reason="no permission")
+            stats["skipped_no_permission"] += 1
+
+        if "efs" in resource_types and self._caller_has("elasticfilesystem:DescribeFileSystems"):
+            stats["efs_file_systems"] = await self._collect_efs(account_id, region)
+        elif "efs" in resource_types:
+            logger.info("resource_skipped", service="efs", reason="no permission")
             stats["skipped_no_permission"] += 1
 
         if "ecr" in resource_types and self._caller_has("ecr:DescribeRepositories"):
@@ -439,6 +447,61 @@ class ResourceCollector(BaseCollector):
                 self._graph.add_node(
                     td_arn, NodeType.ECS_TASK_DEFINITION,
                     data=task_def.model_dump(), label=family,
+                )
+                count += 1
+
+        return count
+
+    # ------------------------------------------------------------------
+    # EFS
+    # ------------------------------------------------------------------
+    async def _collect_efs(self, account_id: str, region: str) -> int:
+        """Collect EFS file systems with mount targets (VPC/subnet for EC2 reachability)."""
+        count = 0
+        async with self._session.client("efs", region_name=region) as efs:
+            raw_fs = await async_paginate(
+                efs, "describe_file_systems", "FileSystems",
+            )
+            self._record(
+                "elasticfilesystem:DescribeFileSystems",
+                detection_cost=get_detection_score("elasticfilesystem:DescribeFileSystems"),
+            )
+
+            for raw in raw_fs or []:
+                fs_id = raw.get("FileSystemId")
+                if not fs_id:
+                    continue
+                fs_arn = raw.get("FileArn", f"arn:aws:elasticfilesystem:{region}:{account_id}:file-system/{fs_id}")
+
+                mt_resp = await safe_api_call(
+                    efs.describe_mount_targets(FileSystemId=fs_id),
+                    default={"MountTargets": []},
+                )
+                self._record(
+                    "elasticfilesystem:DescribeMountTargets",
+                    target_arn=fs_arn,
+                    detection_cost=get_detection_score("elasticfilesystem:DescribeMountTargets"),
+                )
+
+                vpc_ids: list[str] = []
+                subnet_ids: list[str] = []
+                for mt in mt_resp.get("MountTargets", []):
+                    if mt.get("VpcId"):
+                        vpc_ids.append(mt["VpcId"])
+                    if mt.get("SubnetId"):
+                        subnet_ids.append(mt["SubnetId"])
+
+                efs_model = EFSFileSystem(
+                    file_system_id=fs_id,
+                    arn=fs_arn,
+                    region=region,
+                    vpc_ids=list(dict.fromkeys(vpc_ids)),
+                    subnet_ids=list(dict.fromkeys(subnet_ids)),
+                )
+
+                self._graph.add_node(
+                    fs_arn, NodeType.EFS_FILE_SYSTEM,
+                    data=efs_model.model_dump(), label=fs_id,
                 )
                 count += 1
 

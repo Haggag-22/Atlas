@@ -89,6 +89,9 @@ _ACTION_NAMES: dict[str, str] = {
     "can_get_federation_token": "GetFederationToken",
     "can_create_roles_anywhere_persistence": "Roles Anywhere Persistence",
     "can_obtain_creds_via_cognito_identity_pool": "Cognito Identity Pool Creds",
+    "can_backdoor_ecs_task": "ECS Task Definition Backdoor",
+    "can_enable_ssm_via_tags": "SSM via CreateTags",
+    "can_access_efs_from_ec2": "EFS Access from EC2",
 }
 
 

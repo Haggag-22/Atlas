@@ -179,6 +179,9 @@ class AttackGraph:
             "can_assume_via_oidc_misconfig": "OIDC Trust Policy Abuse",
             "can_self_signup_cognito": "Cognito Self-Signup",
             "can_takeover_cloudfront_origin": "CloudFront/S3 Domain Takeover",
+            "can_backdoor_ecs_task": "ECS Task Definition Backdoor",
+            "can_enable_ssm_via_tags": "SSM via CreateTags",
+            "can_access_efs_from_ec2": "EFS Access from EC2",
         }
         for e in self._edges:
             t = e.edge_type.value
@@ -260,6 +263,9 @@ class AttackGraphBuilder:
         self._add_guardduty_evasion_edges(ag)
         self._add_cloudtrail_evasion_edges(ag)
         self._add_pattern_driven_edges(ag)
+        self._add_ecs_backdoor_edges(ag)
+        self._add_ssm_via_tags_edges(ag)
+        self._add_ec2_to_efs_edges(ag)
 
         logger.info("attack_graph_built", **ag.summary())
         return ag
@@ -1811,14 +1817,17 @@ class AttackGraphBuilder:
                 if state not in ("running", "unknown"):
                     continue
 
-                # Target the role if instance has a profile, else the instance
+                # Target the role if instance has a profile (for credential pivot),
+                # else the instance. Also add identity->instance for EFS chain.
                 if profile_arn:
-                    target = self._resolve_instance_profile_role(
+                    role_target = self._resolve_instance_profile_role(
                         profile_arn, inst_arn,
                     )
                 else:
-                    target = inst_arn
+                    role_target = inst_arn
 
+                # Edge to role (or instance when no profile) for pivot
+                target = role_target
                 if has_start_session:
                     api = "ssm:StartSession"
                     prob = 0.80
@@ -1853,6 +1862,24 @@ class AttackGraphBuilder:
                         f"terminate existing shells)."
                     ),
                 ))
+                # When instance has profile, also add identity->instance for EFS chain
+                if profile_arn and target != inst_arn:
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=inst_arn,
+                        edge_type=EdgeType.CAN_SSM_SESSION,
+                        required_permissions=[api],
+                        api_actions=[api],
+                        detection_cost=detection,
+                        success_probability=prob,
+                        noise_level=noise,
+                        guardrail_status="clear",
+                        notes=(
+                            f"SSM {api.split(':')[1]} on instance "
+                            f"{instance_id} — shell access enables EFS mount "
+                            f"when instance is in same VPC as EFS."
+                        ),
+                    ))
 
     # ==================================================================
     # ATTACK PATH 15: EC2 Volume Snapshot Looting
@@ -2176,6 +2203,237 @@ class AttackGraphBuilder:
                         "task_definition_arn": td_arn,
                         "family": family,
                         "metadata_endpoint": "169.254.170.2",
+                    },
+                    notes=notes,
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 18a: ECS Task Definition Backdoor (CloudGoat ecs_efs_attack)
+    # RegisterTaskDefinition + UpdateService to backdoor existing ECS service
+    # ==================================================================
+    def _add_ecs_backdoor_edges(self, ag: AttackGraph) -> None:
+        """Add edges for backdooring ECS services via RegisterTaskDefinition + UpdateService.
+
+        Attacker with ecs:RegisterTaskDefinition, ecs:UpdateService, ecs:ListServices
+        (or ecs:DescribeServices), and iam:PassRole can register a backdoored task
+        definition and update an existing service to use it. The new task runs with
+        the same task role; attacker gains RCE in container and steals creds via
+        169.254.170.2.
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        task_defs = self._env.nodes_of_type(NodeType.ECS_TASK_DEFINITION)
+
+        required_ecs = [
+            "ecs:RegisterTaskDefinition",
+            "ecs:UpdateService",
+        ]
+        has_list_or_describe = [
+            "ecs:ListServices",
+            "ecs:DescribeServices",
+        ]
+
+        for source in identities:
+            if not all(
+                self._identity_has_permission(source, a) for a in required_ecs
+            ):
+                continue
+            if not any(
+                self._identity_has_permission(source, a) for a in has_list_or_describe
+            ):
+                continue
+
+            for td_arn in task_defs:
+                td_data = self._env.get_node_data(td_arn)
+                role_arn = td_data.get("task_role_arn")
+                family = td_data.get("family", td_arn.split("/")[-1])
+
+                if not role_arn:
+                    continue
+                if not self._identity_has_permission(
+                    source, "iam:PassRole", resource_arn=role_arn,
+                ):
+                    continue
+
+                if not self._env.has_node(role_arn):
+                    parts = role_arn.split(":")
+                    role_name = parts[-1].split("/")[-1] if len(parts) >= 6 else "unknown"
+                    account_id = parts[4] if len(parts) >= 5 else ""
+                    self._env.add_node(
+                        role_arn, NodeType.ROLE,
+                        data={
+                            "arn": role_arn,
+                            "role_name": role_name,
+                            "account_id": account_id,
+                            "discovered_via": "ecs_task_role",
+                            "source_task_definition": td_arn,
+                        },
+                        label=f"{role_name} (via ECS)",
+                    )
+
+                detection = sum(self._scorer.score(a) for a in required_ecs + ["iam:PassRole"])
+                prob = 0.75 * self._get_permission_confidence_multiplier(
+                    source, "iam:PassRole", role_arn,
+                )
+                notes = (
+                    f"ECS Task Definition Backdoor — RegisterTaskDefinition + UpdateService "
+                    f"to inject backdoor into service using {family}. Task runs with role "
+                    f"{role_arn}; steal creds via 169.254.170.2 (CloudGoat ecs_efs_attack)."
+                )
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=role_arn,
+                    edge_type=EdgeType.CAN_BACKDOOR_ECS_TASK,
+                    required_permissions=required_ecs + ["iam:PassRole"],
+                    api_actions=required_ecs + ["iam:PassRole"],
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=NoiseLevel.HIGH,
+                    guardrail_status="clear",
+                    conditions={
+                        "task_definition_arn": td_arn,
+                        "family": family,
+                    },
+                    notes=notes,
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 14b: SSM via CreateTags (CloudGoat ecs_efs_attack)
+    # ec2:CreateTags to add StartSession=true, then ssm:StartSession
+    # ==================================================================
+    def _add_ssm_via_tags_edges(self, ag: AttackGraph) -> None:
+        """Add edges for enabling SSM on instances via ec2:CreateTags.
+
+        When SSM session is tag-gated (resource tag StartSession=true), an
+        identity with ec2:CreateTags + ssm:StartSession can add the tag to
+        an instance and then start a session. Targets the instance (or its
+        role when it has a profile).
+        """
+        identities = (
+            self._env.nodes_of_type(NodeType.USER)
+            + self._env.nodes_of_type(NodeType.ROLE)
+        )
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+
+        for source in identities:
+            if not self._identity_has_permission(source, "ec2:CreateTags"):
+                continue
+            if not self._identity_has_permission(source, "ssm:StartSession"):
+                continue
+
+            for inst_arn in instances:
+                inst_data = self._env.get_node_data(inst_arn)
+                instance_id = inst_data.get(
+                    "instance_id", inst_arn.split("/")[-1],
+                )
+                state = inst_data.get("state", "unknown")
+                profile_arn = inst_data.get("instance_profile_arn")
+
+                if state not in ("running", "unknown"):
+                    continue
+
+                role_target = (
+                    self._resolve_instance_profile_role(profile_arn, inst_arn)
+                    if profile_arn
+                    else inst_arn
+                )
+
+                detection = (
+                    self._scorer.score("ec2:CreateTags")
+                    + self._scorer.score("ssm:StartSession")
+                )
+                prob = 0.75 * self._get_permission_confidence_multiplier(
+                    source, "ssm:StartSession",
+                )
+                notes = (
+                    f"SSM via CreateTags — add StartSession=true to instance {instance_id}, "
+                    f"then ssm:StartSession. Bypasses tag-gated SSM (CloudGoat ecs_efs_attack)."
+                )
+                ag.add_edge(AttackEdge(
+                    source_arn=source,
+                    target_arn=role_target,
+                    edge_type=EdgeType.CAN_ENABLE_SSM_VIA_TAGS,
+                    required_permissions=["ec2:CreateTags", "ssm:StartSession"],
+                    api_actions=["ec2:CreateTags", "ssm:StartSession"],
+                    detection_cost=detection,
+                    success_probability=prob,
+                    noise_level=NoiseLevel.HIGH,
+                    guardrail_status="clear",
+                    conditions={
+                        "instance_id": instance_id,
+                        "tag_key": "StartSession",
+                        "tag_value": "true",
+                    },
+                    notes=notes,
+                ))
+                # Also add identity->instance for EFS chain when instance has profile
+                if profile_arn and role_target != inst_arn:
+                    ag.add_edge(AttackEdge(
+                        source_arn=source,
+                        target_arn=inst_arn,
+                        edge_type=EdgeType.CAN_ENABLE_SSM_VIA_TAGS,
+                        required_permissions=["ec2:CreateTags", "ssm:StartSession"],
+                        api_actions=["ec2:CreateTags", "ssm:StartSession"],
+                        detection_cost=detection,
+                        success_probability=prob,
+                        noise_level=NoiseLevel.HIGH,
+                        guardrail_status="clear",
+                        conditions={
+                            "instance_id": instance_id,
+                            "tag_key": "StartSession",
+                            "tag_value": "true",
+                        },
+                        notes=notes,
+                    ))
+
+    # ==================================================================
+    # ATTACK PATH: EC2 → EFS (CloudGoat ecs_efs_attack)
+    # EC2 in same VPC as EFS mount target can mount and read
+    # ==================================================================
+    def _add_ec2_to_efs_edges(self, ag: AttackGraph) -> None:
+        """Add edges from EC2 instances to EFS when in same VPC.
+
+        When an EC2 instance is in the same VPC as an EFS mount target, the
+        instance can mount the EFS and read files. Chain: identity → EC2 (via
+        SSM) → EFS. Used for ecs_efs_attack flag exfiltration.
+        """
+        instances = self._env.nodes_of_type(NodeType.EC2_INSTANCE)
+        efs_systems = self._env.nodes_of_type(NodeType.EFS_FILE_SYSTEM)
+
+        for inst_arn in instances:
+            inst_data = self._env.get_node_data(inst_arn)
+            inst_vpc = inst_data.get("vpc_id")
+            if not inst_vpc:
+                continue
+
+            for efs_arn in efs_systems:
+                efs_data = self._env.get_node_data(efs_arn)
+                efs_vpcs = efs_data.get("vpc_ids", [])
+                if inst_vpc not in efs_vpcs:
+                    continue
+
+                fs_id = efs_data.get("file_system_id", efs_arn.split("/")[-1])
+                instance_id = inst_data.get("instance_id", inst_arn.split("/")[-1])
+
+                notes = (
+                    f"EFS access from EC2 — instance {instance_id} in same VPC as "
+                    f"EFS {fs_id} mount target. Mount and read (CloudGoat ecs_efs_attack)."
+                )
+                ag.add_edge(AttackEdge(
+                    source_arn=inst_arn,
+                    target_arn=efs_arn,
+                    edge_type=EdgeType.CAN_ACCESS_EFS_FROM_EC2,
+                    required_permissions=[],
+                    api_actions=[],
+                    detection_cost=0.0,
+                    success_probability=0.90,
+                    noise_level=NoiseLevel.LOW,
+                    guardrail_status="clear",
+                    conditions={
+                        "vpc_id": inst_vpc,
+                        "file_system_id": fs_id,
                     },
                     notes=notes,
                 ))

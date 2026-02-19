@@ -160,6 +160,19 @@ class ECSTaskDefinition(BaseModel):
     discovered_at: str = Field(default_factory=_now_iso)
 
 
+class EFSFileSystem(BaseModel):
+    """Represents an EFS file system with mount targets (VPC/subnet for reachability)."""
+
+    model_config = {"frozen": True}
+
+    file_system_id: str
+    arn: str
+    region: str
+    vpc_ids: list[str] = Field(default_factory=list)  # VPCs with mount targets
+    subnet_ids: list[str] = Field(default_factory=list)
+    discovered_at: str = Field(default_factory=_now_iso)
+
+
 class LambdaFunction(BaseModel):
     model_config = {"frozen": True}
 

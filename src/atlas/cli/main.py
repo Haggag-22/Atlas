@@ -1562,6 +1562,9 @@ _ACTION_NAMES: dict[str, str] = {
     "can_enumerate_ses": "Enumerate SES",
     "can_modify_sagemaker_lifecycle": "SageMaker Lifecycle Config",
     "can_create_eks_access_entry": "EKS Create Access Entry",
+    "can_backdoor_ecs_task": "ECS Task Definition Backdoor",
+    "can_enable_ssm_via_tags": "SSM via CreateTags",
+    "can_access_efs_from_ec2": "EFS Access from EC2",
 }
 
 
@@ -2058,6 +2061,9 @@ _EDGE_TO_ACTION: dict[str, str] = {
     "can_read_beanstalk_env": "read_beanstalk_env",
     "can_pivot_via_beanstalk_creds": "pivot_via_beanstalk_creds",
     "can_hijack_bedrock_agent": "hijack_bedrock_agent",
+    "can_backdoor_ecs_task": "backdoor_ecs_task",
+    "can_enable_ssm_via_tags": "enable_ssm_via_tags",
+    "can_access_efs_from_ec2": "access_efs_from_ec2",
 }
 
 

@@ -100,7 +100,7 @@ class ReconConfig(BaseModel):
     resource_types: list[str] = Field(
         default_factory=lambda: [
             "s3", "ec2", "lambda", "rds", "kms",
-            "secretsmanager", "ssm", "cloudformation", "ebs", "ecs",
+            "secretsmanager", "ssm", "cloudformation", "ebs", "ecs", "efs",
             "ecr", "cognito", "cloudfront",
             "codebuild", "elasticbeanstalk", "bedrock",
         ],

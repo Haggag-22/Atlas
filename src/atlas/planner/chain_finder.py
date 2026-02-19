@@ -35,6 +35,8 @@ _PIVOT_TYPES = {
     "can_update_login_profile",  # change password for privileged user
     "can_steal_imds_creds",  # IMDS theft gives you the role's credentials
     "can_ssm_session",       # SSM session gives shell + IMDS access to role
+    "can_backdoor_ecs_task",  # ECS backdoor -> task role creds
+    "can_enable_ssm_via_tags",  # CreateTags + StartSession -> EC2/role
     "can_ec2_instance_connect",  # EC2 Instance Connect — SSH access
     "can_ec2_serial_console_ssh",  # EC2 Serial Console — serial access
     "can_steal_lambda_creds",  # Lambda env vars /proc/self/environ
@@ -81,6 +83,7 @@ _TERMINAL_TYPES = {
     "can_access_via_resource_policy",  # access via misconfigured policy
     "can_self_signup_cognito",  # create Cognito user (initial access)
     "can_takeover_cloudfront_origin",  # S3 bucket takeover (initial access)
+    "can_access_efs_from_ec2",  # EC2 -> EFS mount and read (CloudGoat ecs_efs_attack)
 }
 
 # Defense evasion — degrade detection before/during operations
@@ -196,6 +199,27 @@ class ChainFinder:
                     visited=visited_copy,
                     depth=depth + 1,
                 )
+            # Also continue from EC2 instance when reached via SSM (can follow to EFS)
+            elif (
+                edge_type in ("can_ssm_session", "can_enable_ssm_via_tags")
+                and depth + 1 < self._max_depth
+                and self._is_ec2_instance(edge.target_arn)
+            ):
+                visited_copy = visited | {edge.target_arn}
+                self._dfs(
+                    source=edge.target_arn,
+                    current_path=new_path,
+                    edge_map=edge_map,
+                    chains=chains,
+                    seen_signatures=seen_signatures,
+                    visited=visited_copy,
+                    depth=depth + 1,
+                )
+
+    @staticmethod
+    def _is_ec2_instance(arn: str) -> bool:
+        """True if ARN is an EC2 instance (not a role)."""
+        return ":instance/" in arn and ":role/" not in arn
 
     @staticmethod
     def _chain_signature(edges: list[AttackEdge]) -> str:
