@@ -2014,6 +2014,21 @@ class PermissionResolverCollector(BaseCollector):
         except Exception:
             pass
 
+        # Phase 1c: elasticbeanstalk:DescribeEnvironments — get app/env for DescribeConfigurationSettings
+        first_beanstalk_app: str = ""
+        first_beanstalk_env: str = ""
+        try:
+            async with self._session.client(
+                "elasticbeanstalk", region_name=region,
+            ) as eb:
+                resp = await eb.describe_environments(MaxRecords=1)
+                envs = resp.get("Environments", [])
+                if envs:
+                    first_beanstalk_app = envs[0].get("ApplicationName", "")
+                    first_beanstalk_env = envs[0].get("EnvironmentName", "")
+        except Exception:
+            pass
+
         # ── Error classification helper ───────────────────────────────
         def _classify_error(
             error_code: str, http_status: int,
@@ -2085,12 +2100,18 @@ class PermissionResolverCollector(BaseCollector):
             needs_caller = any(
                 v == "__CALLER__" for v in resolved_kwargs.values()
             )
+            needs_beanstalk_env = any(
+                v in ("__FIRST_BEANSTALK_APP__", "__FIRST_BEANSTALK_ENV__")
+                for v in resolved_kwargs.values()
+            )
 
             if needs_bucket and not first_bucket:
                 return
             if needs_trail and not first_trail:
                 return
             if needs_caller and not caller_username:
+                return
+            if needs_beanstalk_env and (not first_beanstalk_app or not first_beanstalk_env):
                 return
 
             for k, v in resolved_kwargs.items():
@@ -2100,6 +2121,10 @@ class PermissionResolverCollector(BaseCollector):
                     resolved_kwargs[k] = first_trail
                 elif v == "__CALLER__":
                     resolved_kwargs[k] = caller_username
+                elif v == "__FIRST_BEANSTALK_APP__":
+                    resolved_kwargs[k] = first_beanstalk_app
+                elif v == "__FIRST_BEANSTALK_ENV__":
+                    resolved_kwargs[k] = first_beanstalk_env
 
             async with sem:
                 _this_allowed: str | None = None

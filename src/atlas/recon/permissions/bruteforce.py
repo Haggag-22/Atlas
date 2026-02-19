@@ -160,7 +160,7 @@ BRUTEFORCE_PROBES: list[tuple[str, str, dict[str, Any], str]] = [
     (
         "elasticbeanstalk",
         "describe_configuration_settings",
-        {"ApplicationName": "placeholder", "EnvironmentName": "placeholder"},
+        {"ApplicationName": "__FIRST_BEANSTALK_APP__", "EnvironmentName": "__FIRST_BEANSTALK_ENV__"},
         "elasticbeanstalk:DescribeConfigurationSettings",
     ),
 
