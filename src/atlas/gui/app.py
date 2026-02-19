@@ -58,6 +58,7 @@ _ACTION_NAMES: dict[str, str] = {
     "can_steal_ecs_task_creds": "ECS Task Credential Theft",
     "can_read_codebuild_env": "CodeBuild Env Theft",
     "can_read_beanstalk_env": "Beanstalk Env Theft",
+    "can_pivot_via_beanstalk_creds": "Beanstalk Credential Pivot",
     "can_hijack_bedrock_agent": "Bedrock Agent Hijacking",
     "can_access_via_resource_policy": "Resource Policy Misconfig",
     "can_assume_via_oidc_misconfig": "OIDC Trust Abuse",

@@ -1538,6 +1538,7 @@ _ACTION_NAMES: dict[str, str] = {
     "s3_acl_persistence": "S3 ACL Persistence",
     "read_codebuild_env": "CodeBuild Env Credential Theft",
     "read_beanstalk_env": "Beanstalk Env Credential Theft",
+    "pivot_via_beanstalk_creds": "Beanstalk Credential Pivot",
     "hijack_bedrock_agent": "Bedrock Agent Hijacking",
     "can_modify_cloudtrail_event_selectors": "CloudTrail Event Selectors Evasion",
     "modify_cloudtrail_event_selectors": "Modify CloudTrail Event Selectors",
@@ -2024,6 +2025,7 @@ _EDGE_TO_ACTION: dict[str, str] = {
     "can_loot_snapshot": "loot_public_snapshot",
     "can_read_codebuild_env": "read_codebuild_env",
     "can_read_beanstalk_env": "read_beanstalk_env",
+    "can_pivot_via_beanstalk_creds": "pivot_via_beanstalk_creds",
     "can_hijack_bedrock_agent": "hijack_bedrock_agent",
 }
 

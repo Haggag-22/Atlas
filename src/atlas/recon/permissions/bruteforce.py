@@ -155,6 +155,15 @@ BRUTEFORCE_PROBES: list[tuple[str, str, dict[str, Any], str]] = [
     # ── ACM ────────────────────────────────────────────────────────────
     ("acm", "list_certificates", {"MaxItems": 1}, "acm:ListCertificates"),
 
+    # ── Elastic Beanstalk (credential theft via env vars — enterprise misconfig) ─
+    ("elasticbeanstalk", "describe_environments", {"MaxRecords": 1}, "elasticbeanstalk:DescribeEnvironments"),
+    (
+        "elasticbeanstalk",
+        "describe_configuration_settings",
+        {"ApplicationName": "placeholder", "EnvironmentName": "placeholder"},
+        "elasticbeanstalk:DescribeConfigurationSettings",
+    ),
+
     # ── CodeBuild / CodePipeline ───────────────────────────────────────
     ("codebuild", "list_projects", {}, "codebuild:ListProjects"),
     ("codepipeline", "list_pipelines", {}, "codepipeline:ListPipelines"),

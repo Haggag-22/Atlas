@@ -173,6 +173,7 @@ class AttackGraph:
             "can_steal_ecs_task_creds": "ECS Task Role Compromise",
             "can_read_codebuild_env": "CodeBuild Env Credential Theft",
             "can_read_beanstalk_env": "Beanstalk Env Credential Theft",
+            "can_pivot_via_beanstalk_creds": "Beanstalk Credential Pivot",
             "can_hijack_bedrock_agent": "Bedrock Agent Hijacking",
             "can_access_via_resource_policy": "Resource Policy Misconfiguration",
             "can_assume_via_oidc_misconfig": "OIDC Trust Policy Abuse",
@@ -247,6 +248,7 @@ class AttackGraphBuilder:
         self._add_oidc_trust_misconfig_edges(ag)
         self._add_cognito_self_signup_edges(ag)
         self._add_cloudfront_takeover_edges(ag)
+        self._add_beanstalk_credential_pivot_edges(ag)
         self._add_passrole_expanded_edges(ag)
         self._add_agentcore_role_confusion_edges(ag)
         self._add_lambda_config_update_edges(ag)
@@ -2214,6 +2216,59 @@ class AttackGraphBuilder:
                     guardrail_status="clear",
                     conditions={"environment_name": env_name},
                     notes=notes,
+                ))
+
+    # ==================================================================
+    # ATTACK PATH 18c2: Beanstalk credential pivot (resource -> identity)
+    # ==================================================================
+    def _add_beanstalk_credential_pivot_edges(self, ag: AttackGraph) -> None:
+        """Add pivot edges from Beanstalk envs with leaked creds to identities.
+
+        When option_settings contain AWS_ACCESS_KEY_ID, RDS_PASSWORD, etc., an
+        attacker reading the config can obtain credentials that may belong to
+        any IAM user in the account. We add env -> identity edges for all
+        users/roles in the same account so the chain finder can discover
+        multi-hop paths: low_priv -> Beanstalk env -> secondary_user -> admin.
+        """
+        for env_arn in self._env.nodes_of_type(NodeType.ELASTICBEANSTALK_ENVIRONMENT):
+            env_data = self._env.get_node_data(env_arn)
+            if not env_data.get("has_credential_like_env", False):
+                continue
+
+            # Extract account from env ARN: arn:aws:elasticbeanstalk:region:account:...
+            parts = env_arn.split(":")
+            if len(parts) < 5:
+                continue
+            env_account = parts[4]
+            env_name = env_data.get("environment_name", env_arn.split("/")[-1])
+
+            identities = (
+                self._env.nodes_of_type(NodeType.USER)
+                + self._env.nodes_of_type(NodeType.ROLE)
+            )
+            for identity_arn in identities:
+                # Same account only
+                id_parts = identity_arn.split(":")
+                if len(id_parts) < 5:
+                    continue
+                if id_parts[4] != env_account:
+                    continue
+
+                ag.add_edge(AttackEdge(
+                    source_arn=env_arn,
+                    target_arn=identity_arn,
+                    edge_type=EdgeType.CAN_PIVOT_VIA_BEANSTALK_CREDS,
+                    required_permissions=[],
+                    api_actions=[],
+                    detection_cost=0.0,
+                    success_probability=0.75,
+                    noise_level=NoiseLevel.MEDIUM,
+                    guardrail_status="clear",
+                    conditions={"environment_name": env_name},
+                    notes=(
+                        f"Beanstalk env {env_name} contains leaked creds (AWS_ACCESS_KEY_ID, etc.). "
+                        "Credentials may belong to this identity. Pivot and check for CreateAccessKey, etc."
+                    ),
                 ))
 
     # ==================================================================

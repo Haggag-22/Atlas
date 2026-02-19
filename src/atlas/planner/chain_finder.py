@@ -39,6 +39,8 @@ _PIVOT_TYPES = {
     "can_ec2_serial_console_ssh",  # EC2 Serial Console — serial access
     "can_steal_lambda_creds",  # Lambda env vars /proc/self/environ
     "can_read_codebuild_env",  # CodeBuild env vars (CloudGoat codebuild_secrets)
+    "can_read_beanstalk_env",  # Beanstalk option_settings — leaked creds (enterprise misconfig)
+    "can_pivot_via_beanstalk_creds",  # env -> identity (creds may belong to this identity)
     "can_steal_ecs_task_creds",  # ECS container metadata 169.254.170.2
     "can_assume_via_oidc_misconfig",  # OIDC trust abuse -> become role
     "can_obtain_creds_via_cognito_identity_pool",  # identity pool -> temp creds
@@ -74,7 +76,6 @@ _TERMINAL_TYPES = {
     "can_get_ec2_password_data", "can_enumerate_ses",
     "can_share_ami", "can_share_ebs_snapshot", "can_share_rds_snapshot",
     "can_invoke_bedrock_model", "can_open_security_group_ingress",
-    "can_read_beanstalk_env",  # read Beanstalk config (CloudGoat beanstalk_secrets)
     "can_modify_s3_acl_persistence",  # S3 ACL backdoor is terminal
     "can_snapshot_volume",  # volume loot is a terminal action
     "can_access_via_resource_policy",  # access via misconfigured policy

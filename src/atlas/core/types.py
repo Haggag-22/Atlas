@@ -161,6 +161,9 @@ class EdgeType(str, Enum):
     # Credential chain
     CREDENTIAL_FOR = "credential_for"      # credential -> identity
 
+    # Resource → identity pivot (leaked creds in resource config)
+    CAN_PIVOT_VIA_BEANSTALK_CREDS = "can_pivot_via_beanstalk_creds"  # env -> identity (creds in option_settings)
+
 
 # ---------------------------------------------------------------------------
 # Detection / stealth classification
