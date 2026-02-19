@@ -69,7 +69,7 @@ As of the last audit, profiles correctly map:
 - **S3** — Bucket-level = management; object-level (GetObject, PutObject, DeleteObject, ListBucket) = data ✓
 - **EC2** — All management ✓
 - **Lambda** — ListFunctions, GetFunction, UpdateFunctionCode, CreateFunction = management; InvokeFunction = data ✓
-- **CloudTrail, GuardDuty, Organizations, etc.** — All management ✓
+- **CloudTrail, GuardDuty, Organizations, etc.** — All management 
 
 ## Adding New Profiles
 

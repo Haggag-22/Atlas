@@ -158,6 +158,15 @@ class PlannerConfig(BaseModel):
     min_success_probability: float = 0.3
     enable_guardrail_analysis: bool = True
     enable_hypothesis_testing: bool = True
+    ai_assisted_target: bool = Field(
+        default=False,
+        description=(
+            "Use AI (OpenAI) to select the best escalation target when none is "
+            "explicitly set. The goal is inferred automatically from recon data "
+            "(findings, reachable roles, permissions). Requires OPENAI_API_KEY. "
+            "Falls back to heuristics if API is unavailable."
+        ),
+    )
 
 
 class TelemetryConfig(BaseModel):

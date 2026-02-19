@@ -42,6 +42,7 @@ class AttackPathExplainer:
         "can_passrole_agentcore": "AgentCore Role Confusion",
         "can_modify_trust": "Trust Policy Modification",
         "can_update_lambda": "Lambda Code Injection",
+        "has_access_to": "Resource Access (inferred from permissions)",
         "can_read_s3": "S3 Read Access",
         "can_write_s3": "S3 Write Access",
         "can_read_userdata": "EC2 User Data Disclosure",

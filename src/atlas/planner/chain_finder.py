@@ -74,6 +74,7 @@ _ESCALATION_TYPES = {
 
 # Edge types that are terminal (resource access, not identity pivot)
 _TERMINAL_TYPES = {
+    "has_access_to",  # inference-derived: identity -> resource (any service)
     "can_read_s3", "can_write_s3",
     "can_get_ec2_password_data", "can_enumerate_ses",
     "can_share_ami", "can_share_ebs_snapshot", "can_share_rds_snapshot",

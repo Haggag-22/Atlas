@@ -34,6 +34,7 @@ from atlas.core.permission_map import (
 from atlas.core.types import EdgeType, NodeType, NoiseLevel
 from atlas.knowledge.api_profiles import load_attack_patterns
 from atlas.planner.detection import DetectionScorer
+from atlas.planner.policy_inference import PolicyInferenceEngine
 
 logger = structlog.get_logger(__name__)
 
@@ -159,6 +160,7 @@ class AttackGraph:
             "can_create_admin_user": "Create Admin User",
             "can_create_backdoor_role": "Create Backdoor Role",
             "can_backdoor_lambda": "Lambda Resource Policy Backdoor",
+            "has_access_to": "Resource Access (inferred)",
             "can_read_s3": "S3 Read Access",
             "can_write_s3": "S3 Write Access",
             "can_read_userdata": "EC2 User Data Disclosure",
@@ -222,10 +224,23 @@ class AttackGraphBuilder:
         self._pmap = permission_map
 
     def build(self) -> AttackGraph:
-        """Construct the full attack graph."""
+        """Construct the full attack graph.
+
+        Inference-driven edges are added FIRST from PermissionMap (identity +
+        resource policies).  Technique-specific builders then supplement with
+        patterns inference cannot capture (PassRole, IMDS theft, etc.).
+        """
         ag = AttackGraph()
 
-        # Each method adds a category of attack edges
+        # ── Inference-first: derive edges from permissions ─────────────
+        if self._pmap:
+            engine = PolicyInferenceEngine(
+                self._env, self._pmap, self._scorer,
+            )
+            for edge in engine.infer_edges():
+                ag.add_edge(edge)
+
+        # ── Technique-specific builders (supplements, not replacements) ─
         self._add_role_assumption_edges(ag)
         self._add_access_key_creation_edges(ag)
         self._add_policy_attachment_edges(ag)

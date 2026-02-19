@@ -832,6 +832,16 @@ class PermissionResolverCollector(BaseCollector):
                 )
                 count += 1
 
+        # ECR repository policies
+        for repo_arn in self._graph.nodes_of_type(NodeType.ECR_REPOSITORY):
+            data = self._graph.get_node_data(repo_arn)
+            policy_doc = data.get("resource_policy", {})
+            if policy_doc and policy_doc.get("Statement"):
+                pmap.load_resource_policy(
+                    repo_arn, policy_doc, account_id,
+                )
+                count += 1
+
         if count > 0:
             logger.info(
                 "resource_policies_loaded",

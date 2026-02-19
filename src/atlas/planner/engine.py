@@ -45,7 +45,7 @@ class PlannerEngine:
         self._config = config
         self._recorder = recorder
 
-    def plan(self, env_model: EnvironmentModel) -> PlanResult:
+    async def plan(self, env_model: EnvironmentModel) -> PlanResult:
         """Produce an attack plan from the environment model.
 
         This is the main entry point.  It:
@@ -121,7 +121,7 @@ class PlannerEngine:
                     raw=env_model.metadata.caller_arn,
                     normalized=source_identity,
                 )
-        target = self._determine_target(env_model, attack_graph, source_identity)
+        target = await self._determine_target(env_model, attack_graph, source_identity)
 
         logger.info(
             "planning_context",
@@ -200,7 +200,7 @@ class PlannerEngine:
         "can_steal_lambda_creds", "can_steal_ecs_task_creds",
     }
 
-    def _determine_target(
+    async def _determine_target(
         self,
         env_model: EnvironmentModel,
         attack_graph: AttackGraph | None = None,
@@ -210,12 +210,13 @@ class PlannerEngine:
 
         Priority:
           1. Explicit target from config
-          2. Privileged role reachable via any credential-pivot edge
-          3. Any non-service-linked role reachable via credential pivot
-          4. Any privileged-sounding role (even if not directly reachable)
-          5. Any non-service-linked reachable role (via graph path)
-          6. Any other user
-          7. Account root (last resort fallback)
+          2. AI-assisted selection (if enabled and no explicit target)
+          3. Privileged role reachable via any credential-pivot edge
+          4. Any non-service-linked role reachable via credential pivot
+          5. Any privileged-sounding role (even if not directly reachable)
+          6. Any non-service-linked reachable role (via graph path)
+          7. Any other user
+          8. Account root (last resort fallback)
         """
         from atlas.core.types import NodeType
 
@@ -223,6 +224,25 @@ class PlannerEngine:
         explicit = self._config.operation.target_privilege
         if explicit:
             return explicit
+
+        # 2. AI-assisted selection (when enabled, no explicit target, API key set)
+        if (
+            self._config.planner.ai_assisted_target
+            and attack_graph
+            and source_identity
+        ):
+            from atlas.planner.ai_target_selector import AITargetSelector
+
+            selector = AITargetSelector()
+            chosen = await selector.select_target(
+                env_model=env_model,
+                attack_graph=attack_graph,
+                source_identity=source_identity,
+                max_depth=self._config.planner.max_path_depth,
+            )
+            if chosen:
+                logger.info("ai_target_selected", target=chosen)
+                return chosen
 
         roles = env_model.graph.nodes_of_type(NodeType.ROLE)
 

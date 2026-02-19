@@ -491,6 +491,7 @@ DryRunOption = typer.Option(False, "--dry-run", help="Dry run mode (no mutations
 NoiseBudgetOption = typer.Option(10.0, "--noise-budget", "-n", help="Max detection cost budget")
 VerboseOption = typer.Option(False, "--verbose", "-v", help="Show detailed logs")
 TargetOption = typer.Option("", "--target", "-t", help="Target name or ARN for escalation")
+AITargetOption = typer.Option(False, "--ai-target", help="Use AI to infer and select best escalation target from recon data")
 AttackPathOption = typer.Option("", "--attack-path", help="Specific attack path by ID (e.g. AP-03)")
 ExplainOption = typer.Option(False, "--explain", help="AI explanation of selected attack path")
 CaseOption = typer.Option(..., "--case", help="Case name (required) — output at output/<case>/")
@@ -670,6 +671,7 @@ def plan(
     account: Optional[str] = AccountOption,
     noise_budget: float = NoiseBudgetOption,
     target: str = TargetOption,
+    ai_target: bool = AITargetOption,
     attack_path: str = AttackPathOption,
     explain: bool = ExplainOption,
     verbose: bool = VerboseOption,
@@ -681,6 +683,8 @@ def plan(
     config = _load_config(config_file, profile, region, account, dry_run=True, noise_budget=noise_budget)
     if target:
         config.operation.target_privilege = target
+    if ai_target:
+        config.planner.ai_assisted_target = True
 
     async def _run() -> None:
         from rich.status import Status
@@ -750,7 +754,7 @@ def plan(
         console.print("\n[bold yellow]═══ PLANNING ═══[/bold yellow]")
         with Status("[yellow]Building attack graph...[/yellow]", console=console, spinner="dots"):
             planner = PlannerEngine(config, recorder)
-            result = planner.plan(env_model)
+            result = await planner.plan(env_model)
         console.print("[green]  Planning complete.[/green]")
 
         # Show all available attack paths
