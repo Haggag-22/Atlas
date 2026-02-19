@@ -130,6 +130,14 @@ class ReconConfig(BaseModel):
             "network load and CloudTrail noise."
         ),
     )
+    bruteforce_timeout_seconds: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "Maximum seconds for brute-force permission enumeration. "
+            "0 = no limit. Prevents long-running scans from blocking."
+        ),
+    )
 
 
 class PlannerConfig(BaseModel):

@@ -39,6 +39,7 @@ Three-tier resolution strategy (cheapest/quietest first):
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -603,9 +604,26 @@ class PermissionResolverCollector(BaseCollector):
                     if not piece_results.get("success"):
                         if self._config.recon.enable_sentinel_probes:
                             self._emit_tier_progress("bruteforce", "running")
-                            probe_results = await self._run_sentinel_probes(
-                                pmap, account_id, region,
-                            )
+                            timeout = self._config.recon.bruteforce_timeout_seconds
+                            try:
+                                if timeout > 0:
+                                    probe_results = await asyncio.wait_for(
+                                        self._run_sentinel_probes(
+                                            pmap, account_id, region,
+                                        ),
+                                        timeout=timeout,
+                                    )
+                                else:
+                                    probe_results = await self._run_sentinel_probes(
+                                        pmap, account_id, region,
+                                    )
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "bruteforce_timeout",
+                                    timeout_seconds=timeout,
+                                    msg="Brute-force enumeration timed out; partial results retained",
+                                )
+                                probe_results = {"total": 0, "succeeded": 0}
                             stats["sentinel_probes_run"] = probe_results["total"]
                             stats["sentinel_probes_succeeded"] = probe_results[
                                 "succeeded"
