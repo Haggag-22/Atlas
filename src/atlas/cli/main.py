@@ -145,7 +145,7 @@ _COLLECTOR_LABELS: dict[str, tuple[str, str]] = {
     "tier:simulate":       ("SimulatePrincipalPolicy",        "Tier 3 — ask AWS per-action allow/deny"),
     "tier:piecemeal":      ("Piecemeal Policy Assembly",      "Tier 4 — ListAttached* + GetPolicyVersion"),
     "tier:last_accessed":  ("Service Last Accessed",          "Tier 5 — historical usage data"),
-    "tier:bruteforce":     ("Brute-Force Enumeration",        "Tier 6 — try ~800 read-only API calls"),
+    "tier:bruteforce":     ("Brute Force",                    "Tier 6 — try ~800 read-only API calls"),
 }
 
 # The display order: collectors first, then the sub-tiers within permission_resolver
