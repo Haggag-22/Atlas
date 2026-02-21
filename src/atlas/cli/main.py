@@ -1128,13 +1128,11 @@ def gui(
 ) -> None:
     """Open the Atlas GUI — view attack paths in a web browser."""
     import subprocess
+    import sys
 
-    gui_path = Path(__file__).resolve().parents[1] / "gui" / "app.py"
-    if not gui_path.exists():
-        console.print(f"[red]GUI app not found at {gui_path}[/red]")
-        raise typer.Exit(1)
-
-    args = ["streamlit", "run", str(gui_path), "--server.headless", "true"]
+    # Run as module so Python finds the atlas package (avoids ModuleNotFoundError
+    # when streamlit run path/to/app.py adds the script dir to sys.path)
+    args = [sys.executable, "-m", "streamlit", "run", "atlas.gui.app", "--server.headless", "true"]
     if case:
         args.extend(["--", "--case", case])
 
