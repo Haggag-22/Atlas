@@ -131,6 +131,22 @@ class AITargetSelector:
 
         client = openai.AsyncOpenAI(api_key=self._api_key)
 
+        # Load pathfinding context for LLM grounding
+        pathfinding_context = ""
+        try:
+            from atlas.knowledge.pathfinding_loader import get_pathfinding_context_for_llm
+            # Include general context - paths that match common escalation patterns
+            pathfinding_context = get_pathfinding_context_for_llm(limit=5)
+        except Exception:
+            pass
+
+        grounding = ""
+        if pathfinding_context:
+            grounding = (
+                "\n\nVerified escalation paths (pathfinding.cloud) - use as reference:\n"
+                f"{pathfinding_context}\n\n"
+            )
+
         system_prompt = (
             "You are an expert AWS red team operator. Given recon data (findings, "
             "reachable roles with metadata), infer the SINGLE BEST escalation target. "
@@ -140,6 +156,7 @@ class AITargetSelector:
             "reveals—no external goal. Respond with ONLY a JSON object: "
             "{\"target_arn\": \"arn:aws:iam::ACCOUNT:role/ROLE_NAME\"}. "
             "No other text. The target_arn MUST be one of the ARNs from the list."
+            f"{grounding}"
         )
 
         role_list = "\n".join(

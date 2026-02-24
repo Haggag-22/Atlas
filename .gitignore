@@ -17,8 +17,12 @@ htmlcov/
 .coverage
 .coverage.*
 
+
 # Local config and outputs (keep examples)
 output/
+
+# pathfinding.cloud synced data (run: atlas sync-pathfinding)
+src/atlas/knowledge/data/pathfinding/
 recon_findings.json
 atlas.yaml
 .atlas.local.yaml
@@ -27,6 +31,8 @@ atlas.yaml
 .idea/
 .vscode/
 .cursor/
+.claude/
+Claude.pdf
 *.swp
 .DS_Store
 Thumbs.db

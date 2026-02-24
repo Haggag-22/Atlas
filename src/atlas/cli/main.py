@@ -4,15 +4,17 @@ atlas.cli.main
 Typer CLI entry point for Atlas.
 
 Commands:
-  atlas config      — Set/show AWS profile and default settings
-  atlas plan        — Run recon + planning, save to output/<case>/plan/
-  atlas simulate    — Simulate attack path from saved case (no AWS calls)
-  atlas run         — Execute attack path from saved case (uses AWS)
-  atlas cases       — List saved cases
-  atlas delete-case — Delete a saved case
-  atlas explain     — Explain an attack path from a saved case (no AWS calls)
-  atlas inspect     — Inspect detection profiles
-  atlas inspect-key — Decode AWS account ID from access key ID (offline)
+  atlas config         — Set/show AWS profile and default settings
+  atlas plan           — Run recon + planning, save to output/<case>/plan/
+  atlas simulate       — Simulate attack path from saved case (no AWS calls)
+  atlas run            — Execute attack path from saved case (uses AWS)
+  atlas cases          — List saved cases
+  atlas delete-case    — Delete a saved case
+  atlas explain        — Explain an attack path from a saved case (no AWS calls)
+  atlas inspect        — Inspect detection profiles
+  atlas inspect-key    — Decode AWS account ID from access key ID (offline)
+  atlas sync-pathfinding — Sync pathfinding.cloud attack paths from GitHub
+  atlas pathfinding    — List and inspect pathfinding.cloud paths (list, show)
 """
 
 from __future__ import annotations
@@ -657,6 +659,172 @@ def _validate_profile(profile: str, region: str) -> None:
     except Exception as exc:
         console.print(f"[red]  Credential validation failed: {exc}[/red]")
         console.print(f"[dim]  Check your AWS credentials for profile '{profile}'[/dim]")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# atlas sync-pathfinding — fetch pathfinding.cloud attack paths
+# ═══════════════════════════════════════════════════════════════════════════
+@app.command("sync-pathfinding")
+def sync_pathfinding() -> None:
+    """Sync pathfinding.cloud attack paths from GitHub (65+ verified IAM privesc paths)."""
+    from atlas.knowledge.pathfinding_loader import sync_pathfinding_data
+
+    with console.status("[yellow]Fetching pathfinding.cloud data from GitHub...[/yellow]"):
+        try:
+            path = sync_pathfinding_data()
+            count = len(list(path.glob("*.yaml")))
+            console.print(f"[green]Synced {count} pathfinding paths to {path}[/green]")
+        except Exception as exc:
+            console.print(f"[red]Sync failed: {exc}[/red]")
+            raise typer.Exit(1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# atlas pathfinding — list and inspect pathfinding.cloud attack paths
+# ═══════════════════════════════════════════════════════════════════════════
+pathfinding_app = typer.Typer(help="List and inspect pathfinding.cloud attack paths")
+
+@pathfinding_app.command("list")
+def pathfinding_list(
+    service: Optional[str] = typer.Option(None, "--service", "-s", help="Filter by service (iam, lambda, ec2, etc.)"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max paths to show"),
+) -> None:
+    """List pathfinding.cloud attack paths."""
+    from atlas.knowledge.pathfinding_loader import load_pathfinding_patterns
+
+    patterns = load_pathfinding_patterns()
+    if not patterns:
+        console.print("[yellow]No pathfinding data. Run: atlas sync-pathfinding[/yellow]")
+        return
+
+    if service:
+        svc_lower = service.lower()
+        patterns = [
+            p for p in patterns
+            if svc_lower in str(p.get("_pathfinding_id", "")).lower()
+            or svc_lower in [s.lower() for s in p.get("_pathfinding_services", [])]
+        ]
+
+    table = Table(title="pathfinding.cloud attack paths")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name", style="white")
+    table.add_column("Category", style="dim")
+    table.add_column("Edge Type", style="green")
+    table.add_column("Permissions", style="yellow", max_width=40)
+    for p in patterns[:limit]:
+        perms = ", ".join(p.get("required_permissions", [])[:3])
+        if len(perms) > 38:
+            perms = perms[:35] + "..."
+        table.add_row(
+            p.get("_pathfinding_id", ""),
+            (p.get("_pathfinding_name", "") or "")[:40],
+            p.get("_pathfinding_category", ""),
+            p.get("edge_type", ""),
+            perms,
+        )
+    console.print(table)
+    console.print(f"[dim]Total: {len(patterns)} paths[/dim]")
+
+
+@pathfinding_app.command("show")
+def pathfinding_show(
+    path_id: str = typer.Argument(..., help="Path ID (e.g. iam-001, lambda-001)"),
+) -> None:
+    """Show full details for a pathfinding attack path."""
+    from atlas.knowledge.pathfinding_loader import get_pathfinding_path
+
+    path_data = get_pathfinding_path(path_id)
+    if not path_data:
+        console.print(f"[red]Path not found: {path_id}[/red]")
+        console.print("[dim]Run: atlas sync-pathfinding[/dim]")
+        raise typer.Exit(1)
+
+    name = path_data.get("_pathfinding_name", path_id)
+    desc = path_data.get("_pathfinding_description", "")
+    perms = path_data.get("required_permissions", [])
+    resource_constraints = path_data.get("_pathfinding_resource_constraints", [])
+    additional_perms = path_data.get("_pathfinding_additional_permissions", [])
+    steps = path_data.get("_pathfinding_exploitation_steps", [])
+    prereqs = path_data.get("_pathfinding_prerequisites", {})
+    rec = path_data.get("_pathfinding_recommendation", "")
+    refs = path_data.get("_pathfinding_references", [])
+    code = path_data.get("_pathfinding_code_snippets", [])
+    limitations = path_data.get("_pathfinding_limitations", "")
+    discovery = path_data.get("_pathfinding_discovery_attribution", {})
+    detection_tools = path_data.get("_pathfinding_detection_tools", {})
+    detection_rules = path_data.get("_pathfinding_detection_rules", [])
+    learning_envs = path_data.get("_pathfinding_learning_environments", {})
+    related = path_data.get("_pathfinding_related_paths", [])
+
+    console.print(Panel(f"[bold]{name}[/bold]\n\n{desc}", title=f"pathfinding.cloud — {path_id}", border_style="cyan"))
+    console.print("\n[bold]Required permissions:[/bold]")
+    for p in perms:
+        constraint = next((c for perm, c in resource_constraints if perm == p), None)
+        if constraint:
+            console.print(f"  • {p} [dim]({constraint})[/dim]")
+        else:
+            console.print(f"  • {p}")
+    if prereqs:
+        console.print("\n[bold]Prerequisites:[/bold]")
+        for k, v in prereqs.items():
+            for item in (v if isinstance(v, list) else [v]):
+                console.print(f"  [{k}] {item}")
+    if steps:
+        console.print("\n[bold]Exploitation steps:[/bold]")
+        for s in steps:
+            tool = s.get("tool", "")
+            cmd = s.get("command", "")
+            console.print(f"  [{tool}] {cmd}")
+            if s.get("description"):
+                console.print(f"    [dim]{s['description'][:80]}...[/dim]" if len(s.get("description", "")) > 80 else f"    [dim]{s['description']}[/dim]")
+    if code:
+        console.print("\n[bold]Code snippets:[/bold]")
+        for i, c in enumerate(code[:3], 1):
+            console.print(Panel(c[:500] + ("..." if len(c) > 500 else ""), title=f"Snippet {i}", border_style="dim"))
+    if rec:
+        console.print("\n[bold]Recommendation:[/bold]")
+        console.print(rec[:600] + ("..." if len(rec) > 600 else ""))
+    if refs:
+        console.print("\n[bold]References:[/bold]")
+        for r in refs[:5]:
+            console.print(f"  • {r.get('title', '')}: {r.get('url', '')}")
+    if limitations:
+        console.print("\n[bold]Limitations:[/bold]")
+        console.print(limitations[:500] + ("..." if len(limitations) > 500 else ""))
+    if additional_perms:
+        console.print("\n[bold]Additional permissions (recon):[/bold]")
+        for ap in additional_perms[:5]:
+            perm = ap.get("permission", "")
+            rc = ap.get("resourceConstraints", "")
+            console.print(f"  • {perm}" + (f" [dim]({rc})[/dim]" if rc else ""))
+    if discovery:
+        fd = discovery.get("firstDocumented", {})
+        if fd:
+            console.print("\n[bold]Discovery:[/bold]")
+            console.print(f"  {fd.get('author', '')} ({fd.get('organization', '')}, {fd.get('date', '')})")
+            if fd.get("link"):
+                console.print(f"  [link]{fd['link']}[/link]")
+    if detection_tools:
+        console.print("\n[bold]Detection tools:[/bold]")
+        for tool, url in list(detection_tools.items())[:5]:
+            console.print(f"  • {tool}: {url}")
+    if detection_rules:
+        console.print("\n[bold]Detection rules:[/bold]")
+        for rule in detection_rules[:3]:
+            console.print(f"  • {rule.get('platform', '')}: {rule.get('url', '')}")
+    if learning_envs:
+        console.print("\n[bold]Learning environments:[/bold]")
+        for env_name, env_data in list(learning_envs.items())[:3]:
+            if isinstance(env_data, dict):
+                scenario = env_data.get("scenario", "")
+                desc = env_data.get("description", "")
+                console.print(f"  • {env_name}: {scenario}" + (f" — {desc[:50]}..." if desc else ""))
+    if related:
+        console.print("\n[bold]Related paths:[/bold]")
+        console.print("  " + ", ".join(related))
+
+
+app.add_typer(pathfinding_app, name="pathfinding")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

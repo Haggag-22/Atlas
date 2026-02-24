@@ -33,6 +33,7 @@ from atlas.core.permission_map import (
 )
 from atlas.core.types import EdgeType, NodeType, NoiseLevel
 from atlas.knowledge.api_profiles import load_attack_patterns
+from atlas.knowledge.pathfinding_loader import load_pathfinding_patterns
 from atlas.planner.detection import DetectionScorer
 from atlas.planner.policy_inference import PolicyInferenceEngine
 
@@ -4267,13 +4268,21 @@ class AttackGraphBuilder:
     # ATTACK PATH 30: Pattern-driven edges (from attack_patterns.yaml)
     # ==================================================================
     def _add_pattern_driven_edges(self, ag: AttackGraph) -> None:
-        """Add attack edges from the pattern registry.
+        """Add attack edges from the pattern registry and pathfinding.cloud.
 
         Matches identity permissions against each pattern's required_permissions.
         When all required permissions are present, adds the corresponding edge.
-        Replaces hardcoded Stratus technique logic with YAML-driven patterns.
+        Merges Atlas attack_patterns.yaml with pathfinding.cloud (65+ verified paths).
         """
-        patterns = load_attack_patterns()
+        patterns = list(load_attack_patterns())
+        pathfinding = load_pathfinding_patterns()
+        # Dedupe: skip pathfinding patterns that match existing (required_permissions, edge_type)
+        seen = {(tuple(p.get("required_permissions", [])), p.get("edge_type")) for p in patterns}
+        for pf in pathfinding:
+            key = (tuple(pf.get("required_permissions", [])), pf.get("edge_type"))
+            if key not in seen:
+                seen.add(key)
+                patterns.append(pf)
         if not patterns:
             return
 

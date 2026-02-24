@@ -149,10 +149,30 @@ class AttackPathExplainer:
         }
 
     async def _llm_explain(self, context: dict[str, Any]) -> str:
-        """Use OpenAI to generate an explanation."""
+        """Use OpenAI to generate an explanation, grounded in pathfinding.cloud."""
         import openai
 
         client = openai.AsyncOpenAI(api_key=self._api_key)
+
+        # Load pathfinding context for LLM grounding (verified attack paths)
+        pathfinding_context = ""
+        try:
+            from atlas.knowledge.pathfinding_loader import get_pathfinding_context_for_llm
+            pathfinding_context = get_pathfinding_context_for_llm(
+                edge_type=context.get("edge_type"),
+                permissions=context.get("api_actions", []),
+                limit=3,
+            )
+        except Exception:
+            pass
+
+        grounding = ""
+        if pathfinding_context:
+            grounding = (
+                "\n\nUse the following verified paths from pathfinding.cloud as ground truth. "
+                "Your explanation should align with these documented techniques:\n\n"
+                f"{pathfinding_context}\n\n"
+            )
 
         system_prompt = (
             "You are an expert AWS cloud security analyst explaining attack paths "
@@ -160,6 +180,7 @@ class AttackPathExplainer:
             "Use numbered steps. Mention specific AWS API calls. "
             "Explain what permissions make this possible and what detection "
             "mechanisms might catch it. Keep the explanation under 300 words."
+            f"{grounding}"
         )
 
         user_prompt = self._format_prompt(context)
