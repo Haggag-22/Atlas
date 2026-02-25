@@ -997,7 +997,14 @@ def run(
         console.print("\n[yellow]Dry-run mode — skipping execution.[/yellow]")
         return
 
-    config = _load_config(config_file, profile, region, account, dry_run=False, noise_budget=10.0)
+    # Use case account when --account not passed (safety requires allowed_account_ids)
+    effective_account = account or case_meta.get("account_id")
+    if not effective_account:
+        console.print("\n[red]Cannot run: case has no account_id and --account was not provided.[/red]")
+        console.print(f"  [dim]Use:  atlas run --case {case} --account <ACCOUNT_ID>[/dim]")
+        raise typer.Exit(1)
+
+    config = _load_config(config_file, profile, region, effective_account, dry_run=False, noise_budget=10.0)
 
     async def _execute() -> None:
         from rich.status import Status
