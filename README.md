@@ -93,10 +93,7 @@ atlas gui --case mycase
 | Command | Description |
 |--------|-------------|
 | `atlas config` | Set or show AWS profile and region |
-| `atlas sync-pathfinding` | Sync pathfinding.cloud attack paths (65+ verified IAM privesc paths) |
-| `atlas pathfinding list` | List pathfinding attack paths (optionally filter by service) |
-| `atlas pathfinding show <id>` | Show full details for a path (exploitation steps, code, references) |
-| `atlas plan` | Run reconnaissance + planning, save to `output/<case>/plan/` |
+| `atlas plan` | Run reconnaissance + planning. Uses pathfinding.cloud (65+ verified IAM privesc paths) automatically—syncs on first run if needed. |
 | `atlas simulate` | Simulate an attack path (no AWS calls) |
 | `atlas run` | Execute an attack path (uses AWS) |
 | `atlas cases` | List saved cases |
