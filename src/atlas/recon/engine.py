@@ -240,16 +240,21 @@ class ReconEngine:
     async def run(
         self,
         progress_callback: Any = None,
+        session: Any = None,
     ) -> EnvironmentModel:
         """Execute all enabled collectors and return the EnvironmentModel.
 
         Two-phase execution:
           Phase 1 — permission_resolver (builds PermissionMap)
           Phase 2 — all other collectors (permission-gated)
+
+        If session is provided (e.g. from SessionManager after assume_role),
+        recon runs as that identity. Otherwise uses config.aws.
         """
         self._progress_cb = progress_callback
         model = EnvironmentModel()
-        session = create_async_session(self._config.aws)
+        if session is None:
+            session = create_async_session(self._config.aws)
 
         # ── Identify ourselves ─────────────────────────────────────
         identity = await get_caller_identity(session)

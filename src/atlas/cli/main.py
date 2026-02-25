@@ -5,6 +5,7 @@ Typer CLI entry point for Atlas.
 
 Commands:
   atlas config       — Set/show AWS profile and default settings
+  atlas profile      — Show current AWS identity (who you are logged in as)
   atlas plan         — Run recon + planning (pathfinding.cloud embedded automatically)
   atlas simulate     — Simulate attack path from saved case (no AWS calls)
   atlas run          — Execute attack path from saved case (uses AWS)
@@ -142,6 +143,7 @@ _COLLECTOR_LABELS: dict[str, tuple[str, str]] = {
     # Sub-tiers inside permission_resolver (rendered individually)
     "tier:policy_docs":    ("Policy Document Analysis",       "Tier 1 — parse cached policy JSON"),
     "tier:auth_details":   ("GetAccountAuthorizationDetails", "Tier 2 — single API, all policies"),
+    "tier:assumable_roles": ("Assumable Roles",               "Tier 2b — fetch policies for roles trusting account root"),
     "tier:simulate":       ("SimulatePrincipalPolicy",        "Tier 3 — ask AWS per-action allow/deny"),
     "tier:piecemeal":      ("Piecemeal Policy Assembly",      "Tier 4 — ListAttached* + GetPolicyVersion"),
     "tier:last_accessed":  ("Service Last Accessed",          "Tier 5 — historical usage data"),
@@ -154,7 +156,7 @@ _COLLECTOR_ORDER = [
     "logging_config", "resource", "backup",
 ]
 _TIER_ORDER = [
-    "tier:policy_docs", "tier:auth_details", "tier:simulate",
+    "tier:policy_docs", "tier:auth_details", "tier:assumable_roles", "tier:simulate",
     "tier:piecemeal", "tier:last_accessed", "tier:bruteforce",
 ]
 
@@ -510,6 +512,48 @@ def _save_atlas_config(data: dict[str, Any]) -> None:
     """Save Atlas defaults to ~/.atlas/config.json."""
     _CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     _CONFIG_FILE.write_text(json.dumps(data, indent=2))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# atlas profile — show current AWS identity
+# ═══════════════════════════════════════════════════════════════════════════
+@app.command()
+def profile(
+    profile_name: Optional[str] = typer.Option(None, "--profile", "-p", help="AWS profile (default: from atlas config)"),
+    region: Optional[str] = typer.Option(None, "--region", "-r", help="AWS region (default: from atlas config)"),
+) -> None:
+    """Show the current AWS identity (who you are logged in as)."""
+    saved = _load_saved_config()
+    effective_profile = profile_name or saved.get("profile", "default")
+    effective_region = region or saved.get("region", "us-east-1")
+
+    try:
+        from atlas.core.config import AWSConfig
+        from atlas.utils.aws import create_sync_session
+
+        config = AWSConfig(
+            profile=effective_profile if (effective_profile and effective_profile != "default") else None,
+            region=effective_region,
+        )
+        session = create_sync_session(config)
+        sts = session.client("sts")
+        identity = sts.get_caller_identity()
+
+        console.print(f"\n[bold]Current AWS Identity[/bold]\n")
+        table = Table(show_header=False)
+        table.add_column("", style="cyan", width=12)
+        table.add_column("", style="white")
+        table.add_row("Profile", f"[bold]{effective_profile}[/bold]")
+        table.add_row("Account", identity["Account"])
+        table.add_row("User ID", identity.get("UserId", ""))
+        table.add_row("ARN", identity["Arn"])
+        table.add_row("Identity", identity["Arn"].split("/")[-1])
+        console.print(table)
+        console.print()
+    except Exception as exc:
+        console.print(f"\n[red]Failed to get identity: {exc}[/red]")
+        console.print(f"[dim]  Check AWS credentials for profile '{effective_profile}'[/dim]")
+        raise typer.Exit(1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -928,6 +972,10 @@ def run(
     attack_path: str = AttackPathOption,
     dry_run: bool = DryRunOption,
     force: bool = typer.Option(False, "--force", help="Execute even if plan data is stale (>6h)"),
+    continue_: bool = typer.Option(
+        False, "--continue",
+        help="After execution, replan from the current identity (e.g. assumed role)",
+    ),
     config_file: Optional[Path] = ConfigOption,
     profile: Optional[str] = ProfileOption,
     region: str = RegionOption,
@@ -1047,6 +1095,64 @@ def run(
             console.print(chain_table)
 
         console.print(f"\n[green]Saved to output/{case}/run/[/green]")
+
+        # --continue: replan from current identity (e.g. after assume_role)
+        if continue_ and session_mgr.chain_depth > 1:
+            current_arn = session_mgr.current_identity
+            console.print(f"\n[bold cyan]═══ REPLAN FROM CURRENT IDENTITY ═══[/bold cyan]")
+            console.print(f"  [bold]You are now:[/bold]  [cyan]{current_arn}[/cyan]\n")
+
+            from atlas.core.cases import plan_dir, save_plan
+            from atlas.core.telemetry import TelemetryRecorder
+            from atlas.planner.engine import PlannerEngine
+            from atlas.recon.engine import ReconEngine
+
+            pd = plan_dir(case)
+            recon_recorder = TelemetryRecorder()
+            recon_engine = ReconEngine(config, recon_recorder)
+            pivot_session = session_mgr.get_current_session()
+
+            with Status("[cyan]Recon as current identity...[/cyan]", console=console, spinner="dots"):
+                env_model = await recon_engine.run(session=pivot_session)
+            await recon_recorder.flush_to_file(pd / "telemetry_replan.jsonl")
+
+            with Status("[yellow]Building attack graph...[/yellow]", console=console, spinner="dots"):
+                planner = PlannerEngine(config, recon_recorder)
+                result = await planner.plan(env_model)
+
+            path_map = _show_attack_paths(result.attack_graph, result.source_identity)
+            all_edges = result.attack_graph.edges
+            save_plan(case, env_model, all_edges, result.source_identity, result.target)
+
+            paths_data = []
+            for pid, pchain in path_map.items():
+                noise_val = pchain.max_noise_level.value if hasattr(pchain.max_noise_level, "value") else str(pchain.max_noise_level)
+                chain_edges = []
+                for e in pchain.edges:
+                    chain_edges.append({"edge_type": e.edge_type.value, "source": e.source_arn, "target": e.target_arn})
+                first_attack = pchain.edges[0].edge_type.value if pchain.edges else ""
+                paths_data.append({
+                    "id": pid, "attack": first_attack, "target": pchain.final_target_arn,
+                    "hops": pchain.hop_count, "chain": pchain.summary_text,
+                    "detection_cost": pchain.total_detection_cost,
+                    "success_probability": pchain.total_success_probability,
+                    "noise_level": noise_val, "edges": chain_edges,
+                })
+            (pd / "attack_paths.json").write_text(json.dumps(paths_data, indent=2, default=str))
+            if result.plan:
+                (pd / "attack_plan.json").write_text(json.dumps(result.plan.model_dump(), indent=2, default=str))
+
+            if result.plan:
+                matched_id = _resolve_path_id(result.plan, path_map)
+                if matched_id and matched_id in path_map:
+                    _render_chain_viz(path_map[matched_id], matched_id)
+                _show_plan(result.plan, path_id=matched_id)
+            if result.reachable_targets:
+                _show_reachable(result.reachable_targets)
+
+            console.print(f"\n[green]Replan saved. Next steps from current identity:[/green]")
+            console.print(f"[dim]  Assume the role, then:  atlas run --case {case} --attack-path AP-XX[/dim]")
+            console.print(f"[dim]  Or chain again:        atlas run --case {case} --attack-path AP-04 --continue[/dim]")
 
     asyncio.run(_execute())
 

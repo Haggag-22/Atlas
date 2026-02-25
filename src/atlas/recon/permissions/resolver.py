@@ -475,6 +475,7 @@ class PermissionResolverCollector(BaseCollector):
             "permission_boundaries_applied": 0,
             "resource_policies_analyzed": 0,
             "condition_gated_permissions": 0,
+            "assumable_roles_mapped": 0,
         }
 
         # Get all identities from the graph
@@ -519,7 +520,7 @@ class PermissionResolverCollector(BaseCollector):
             stats["policy_docs_available"] = True
             self._emit_tier_progress("policy_docs", "ok", "Full resolution from policy docs")
             # Skip remaining tiers
-            for t in ("auth_details", "simulate", "piecemeal", "last_accessed", "bruteforce"):
+            for t in ("auth_details", "assumable_roles", "simulate", "piecemeal", "last_accessed", "bruteforce"):
                 self._emit_tier_progress(t, "skipped")
             logger.info(
                 "permission_resolution_tier1",
@@ -537,7 +538,7 @@ class PermissionResolverCollector(BaseCollector):
                 stats["tier_used"] = "account_auth_details"
                 stats["account_auth_details_available"] = True
                 self._emit_tier_progress("auth_details", "ok", "Full policy data")
-                for t in ("simulate", "piecemeal", "last_accessed", "bruteforce"):
+                for t in ("assumable_roles", "simulate", "piecemeal", "last_accessed", "bruteforce"):
                     self._emit_tier_progress(t, "skipped")
                 logger.info(
                     "permission_resolution_tier2",
@@ -545,6 +546,22 @@ class PermissionResolverCollector(BaseCollector):
                 )
             else:
                 self._emit_tier_progress("auth_details", "denied")
+
+                # ── Tier 2b: Assumable roles (when GetAccountAuthDetails denied)
+                #    Fetch policies for roles that trust account root — enables
+                #    multi-hop chains (caller → assume role → next step).
+                self._emit_tier_progress("assumable_roles", "running")
+                ar_results = await self._resolve_assumable_roles_policies(
+                    pmap, account_id, region,
+                )
+                stats["assumable_roles_mapped"] = ar_results.get("roles_mapped", 0)
+                if ar_results.get("roles_mapped", 0) > 0:
+                    self._emit_tier_progress(
+                        "assumable_roles", "ok",
+                        f"{ar_results['roles_mapped']} roles",
+                    )
+                else:
+                    self._emit_tier_progress("assumable_roles", "skipped")
 
                 # ── Tier 3: SimulatePrincipalPolicy ──────────────────
                 self._emit_tier_progress("simulate", "running")
@@ -1269,6 +1286,168 @@ class PermissionResolverCollector(BaseCollector):
                 error=str(exc),
             )
             return False
+
+    # ==================================================================
+    # Tier 2b: Assumable roles (when GetAccountAuthorizationDetails denied)
+    # ==================================================================
+    #
+    # When Tier 2 fails, we can still discover roles that trust account root
+    # and fetch their policies. This enables multi-hop chains:
+    #   caller → assume role → next step (e.g. create Lambda, attach policy).
+    #
+    # Uses: ListRoles, GetRole, ListAttachedRolePolicies, GetRolePolicy,
+    #       GetPolicy, GetPolicyVersion.
+
+    def _role_trusts_account_root(
+        self, trust_policy: dict[str, Any], account_id: str,
+    ) -> bool:
+        """Check if trust policy allows account root (any identity in account)."""
+        root_arn = f"arn:aws:iam::{account_id}:root"
+        for stmt in trust_policy.get("Statement", []):
+            if stmt.get("Effect") != "Allow":
+                continue
+            principal = stmt.get("Principal", {})
+            if principal == "*":
+                return True
+            if isinstance(principal, dict):
+                aws_principals = principal.get("AWS", [])
+                if isinstance(aws_principals, str):
+                    aws_principals = [aws_principals]
+                for p in aws_principals:
+                    if p == "*":
+                        return True
+                    if ":root" in p and account_id in p:
+                        return True
+                    if p == root_arn:
+                        return True
+        return False
+
+    async def _resolve_assumable_roles_policies(
+        self,
+        pmap: PermissionMap,
+        account_id: str,
+        region: str,
+    ) -> dict[str, Any]:
+        """Fetch policies for roles that trust account root.
+
+        Enables multi-hop attack chains when GetAccountAuthorizationDetails
+        is denied. Returns dict with roles_mapped, policies_fetched.
+        """
+        results: dict[str, Any] = {"roles_mapped": 0, "policies_fetched": 0}
+        max_roles = 100  # Limit API calls
+
+        try:
+            async with self._session.client("iam") as iam:
+                roles_to_fetch: list[tuple[str, str]] = []  # (arn, role_name)
+
+                paginator = iam.get_paginator("list_roles")
+                async for page in paginator.paginate():
+                    for role in page.get("Roles", []):
+                        if len(roles_to_fetch) >= max_roles:
+                            break
+                        role_arn = role.get("Arn", "")
+                        role_name = role.get("RoleName", "")
+                        if not role_arn or not role_name:
+                            continue
+                        try:
+                            get_resp = await iam.get_role(RoleName=role_name)
+                            self._record("iam:GetRole")
+                            trust_policy = get_resp.get("Role", {}).get(
+                                "AssumeRolePolicyDocument", {}
+                            )
+                            if isinstance(trust_policy, str):
+                                import json as _json
+                                trust_policy = _json.loads(trust_policy)
+                            if self._role_trusts_account_root(
+                                trust_policy, account_id,
+                            ):
+                                roles_to_fetch.append((role_arn, role_name))
+                        except ClientError:
+                            pass
+
+                for role_arn, role_name in roles_to_fetch:
+                    profile = pmap.get_or_create_profile(role_arn)
+                    if profile.policy_documents_available:
+                        continue  # Already have from elsewhere
+                    profile.resolution_tier = "assumable_roles"
+                    policies_fetched = 0
+
+                    try:
+                        attached = await iam.list_attached_role_policies(
+                            RoleName=role_name,
+                        )
+                        self._record("iam:ListAttachedRolePolicies")
+                        for pol in attached.get("AttachedPolicies", []):
+                            pol_arn = pol.get("PolicyArn", "")
+                            if not pol_arn:
+                                continue
+                            try:
+                                ver_resp = await iam.get_policy(
+                                    PolicyArn=pol_arn,
+                                )
+                                default_ver = ver_resp["Policy"].get(
+                                    "DefaultVersionId", "v1",
+                                )
+                                doc_resp = await iam.get_policy_version(
+                                    PolicyArn=pol_arn,
+                                    VersionId=default_ver,
+                                )
+                                doc = doc_resp.get("PolicyVersion", {}).get(
+                                    "Document", {},
+                                )
+                                if doc:
+                                    self._extract_permissions_from_document(
+                                        profile, doc,
+                                        PermissionSource.PIECEMEAL_POLICY,
+                                    )
+                                    policies_fetched += 1
+                                self._record("iam:GetPolicyVersion")
+                            except ClientError:
+                                pass
+
+                        inline_resp = await iam.list_role_policies(
+                            RoleName=role_name,
+                        )
+                        self._record("iam:ListRolePolicies")
+                        for pname in inline_resp.get("PolicyNames", []):
+                            try:
+                                pr = await iam.get_role_policy(
+                                    RoleName=role_name,
+                                    PolicyName=pname,
+                                )
+                                doc = pr.get("PolicyDocument", {})
+                                if doc:
+                                    self._extract_permissions_from_document(
+                                        profile, doc,
+                                        PermissionSource.PIECEMEAL_POLICY,
+                                    )
+                                    policies_fetched += 1
+                                self._record("iam:GetRolePolicy")
+                            except ClientError:
+                                pass
+
+                        if policies_fetched > 0:
+                            profile.policy_documents_available = True
+                            results["roles_mapped"] += 1
+                            results["policies_fetched"] += policies_fetched
+                    except ClientError:
+                        pass
+
+                if results["roles_mapped"] > 0:
+                    logger.info(
+                        "assumable_roles_mapped",
+                        roles=results["roles_mapped"],
+                        policies=results["policies_fetched"],
+                    )
+        except ClientError as exc:
+            logger.info(
+                "assumable_roles_denied",
+                error=exc.response.get("Error", {}).get("Code", ""),
+            )
+        except Exception as exc:
+            logger.warning("assumable_roles_failed", error=str(exc))
+
+        return results
 
     # ==================================================================
     # Tier 3: iam:SimulatePrincipalPolicy
