@@ -1,7 +1,7 @@
 """
 atlas.gui.app
 ~~~~~~~~~~~~~
-Streamlit GUI for Atlas — Prowler-style dashboard, attack paths, graph viz.
+BloodHound-style GUI for Atlas — query-first, graph visualization, path analysis.
 """
 
 from __future__ import annotations
@@ -19,6 +19,39 @@ from atlas.core.types import EdgeType
 from atlas.knowledge.api_profiles import load_attack_patterns
 from atlas.planner.attack_graph import AttackGraph
 from atlas.planner.chain_finder import ChainFinder
+from atlas.query.engine import QueryEngine
+
+# BloodHound-style edge colors by type (danger level)
+_EDGE_COLORS: dict[str, str] = {
+    "can_assume": "#ef4444",           # red - high impact
+    "can_create_key": "#f97316",       # orange
+    "can_attach_policy": "#f97316",
+    "can_put_policy": "#f97316",
+    "can_modify_trust": "#ef4444",
+    "can_passrole": "#eab308",         # yellow
+    "can_passrole_ec2": "#eab308",
+    "can_passrole_ecs": "#eab308",
+    "can_update_lambda": "#22c55e",     # green
+    "can_read_s3": "#3b82f6",          # blue
+    "can_write_s3": "#3b82f6",
+    "can_steal_imds_creds": "#ef4444",
+    "can_ssm_session": "#eab308",
+    "can_stop_cloudtrail": "#ef4444",
+    "can_delete_cloudtrail": "#ef4444",
+}
+_DEFAULT_EDGE_COLOR = "#6b7280"  # gray
+
+# Node colors by type (BloodHound-style)
+_NODE_COLORS: dict[str, str] = {
+    "user": "#60a5fa",      # blue
+    "role": "#4ade80",      # green
+    "group": "#a78bfa",     # purple
+    "root": "#fbbf24",      # amber - admin
+    "s3": "#38bdf8",        # sky
+    "lambda": "#34d399",    # emerald
+    "ec2": "#f472b6",       # pink
+    "default": "#94a3b8",   # slate
+}
 
 _ACTION_NAMES: dict[str, str] = {
     "can_assume": "Role Assumption",
@@ -120,6 +153,29 @@ def _arn_type(arn: str) -> str:
     if ":instance/" in arn:
         return "EC2 Instance"
     return "Other"
+
+
+def _node_color(arn: str, is_source: bool = False, is_highlighted: bool = False) -> str:
+    """BloodHound-style node color by type."""
+    if is_highlighted:
+        return "#fbbf24"  # amber highlight
+    if is_source:
+        return "#4ade80"  # green source
+    if ":root" in arn:
+        return _NODE_COLORS["root"]
+    if ":user/" in arn:
+        return _NODE_COLORS["user"]
+    if ":role/" in arn:
+        return _NODE_COLORS["role"]
+    if ":group/" in arn:
+        return _NODE_COLORS["group"]
+    if "s3:::" in arn or ":s3:" in arn:
+        return _NODE_COLORS["s3"]
+    if ":function:" in arn:
+        return _NODE_COLORS["lambda"]
+    if ":instance/" in arn:
+        return _NODE_COLORS["ec2"]
+    return _NODE_COLORS["default"]
 
 
 def _build_path_map(
@@ -360,25 +416,48 @@ async def _ask_ai_about_path(
     return response.choices[0].message.content or "No response generated."
 
 
-def _render_pyvis_graph(attack_edges: list[AttackEdge], source_identity: str) -> str:
-    """Build interactive attack graph HTML using pyvis."""
+def _render_pyvis_graph(
+    attack_edges: list[AttackEdge],
+    source_identity: str,
+    *,
+    highlight_nodes: set[str] | None = None,
+    highlight_edges: list[tuple[str, str]] | None = None,
+) -> str:
+    """Build BloodHound-style interactive attack graph using pyvis."""
     try:
         from pyvis.network import Network
     except ImportError:
         return ""
 
+    highlight_nodes = highlight_nodes or set()
+    highlight_edges_set = set()
+    if highlight_edges:
+        highlight_edges_set = {(a, b) for a, b in highlight_edges}
+
     net = Network(
-        height="500px",
+        height="600px",
         width="100%",
-        bgcolor="#0e1117",
-        font_color="#fafafa",
+        bgcolor="#1a1d24",
+        font_color="#e2e8f0",
         directed=True,
     )
     net.set_options("""
     var options = {
-      "nodes": {"font": {"size": 12}},
-      "edges": {"arrows": {"to": {"enabled": true}}, "smooth": {"type": "continuous"}},
-      "physics": {"enabled": true, "solver": "forceAtlas2Based"}
+      "nodes": {
+        "font": {"size": 13, "color": "#e2e8f0"},
+        "borderWidth": 2,
+        "shadow": true
+      },
+      "edges": {
+        "arrows": {"to": {"enabled": true}},
+        "smooth": {"type": "continuous"},
+        "width": 1.5
+      },
+      "physics": {
+        "enabled": true,
+        "solver": "forceAtlas2Based",
+        "forceAtlas2Based": {"gravitationalConstant": -80, "springLength": 120}
+      }
     }
     """)
 
@@ -387,13 +466,32 @@ def _render_pyvis_graph(attack_edges: list[AttackEdge], source_identity: str) ->
         for arn in (e.source_arn, e.target_arn):
             if arn not in seen:
                 seen.add(arn)
-                label = _short_name(arn, max_len=25)
-                color = "#4ade80" if arn == source_identity else "#60a5fa"
-                if ":root" in arn:
-                    color = "#fbbf24"
-                net.add_node(arn, label=html.escape(label), color=color)
+                label = _short_name(arn, max_len=28)
+                is_source = arn == source_identity
+                is_hl = arn in highlight_nodes
+                color = _node_color(arn, is_source=is_source, is_highlighted=is_hl)
+                size = 28 if (is_source or is_hl) else 22
+                border = "#fbbf24" if is_hl else "#475569"
+                net.add_node(
+                    arn,
+                    label=html.escape(label),
+                    color=color,
+                    size=size,
+                    borderWidth=3 if is_hl else 2,
+                    borderWidthSelected=4,
+                )
+        edge_color = _EDGE_COLORS.get(e.edge_type.value, _DEFAULT_EDGE_COLOR)
+        is_hl_edge = (e.source_arn, e.target_arn) in highlight_edges_set
+        if is_hl_edge:
+            edge_color = "#fbbf24"
         label = _action_name(e.edge_type.value)
-        net.add_edge(e.source_arn, e.target_arn, title=html.escape(label))
+        net.add_edge(
+            e.source_arn,
+            e.target_arn,
+            title=html.escape(label),
+            color=edge_color,
+            width=3 if is_hl_edge else 1.5,
+        )
 
     return net.generate_html()
 
@@ -402,8 +500,10 @@ def main() -> None:
     st.set_page_config(page_title="Atlas", page_icon="🛡️", layout="wide")
     st.markdown("""
     <style>
-    .stApp { background-color: #0e1117; }
+    .stApp { background-color: #0f1419; }
     [data-testid="stMetricValue"] { color: #4ade80; }
+    .stSidebar { background: linear-gradient(180deg, #1a1f26 0%, #0f1419 100%); }
+    h1, h2, h3 { color: #e2e8f0 !important; }
     </style>
     """, unsafe_allow_html=True)
     st.title("🛡️ Atlas — Attack Path Explorer")
@@ -417,14 +517,13 @@ def main() -> None:
         return
 
     case_names = [c.get("name", "?") for c in all_cases]
-
     if case_from_cli and case_from_cli in case_names:
         default_idx = case_names.index(case_from_cli)
     else:
         default_idx = 0
 
-    case_name = st.selectbox(
-        "Select case",
+    case_name = st.sidebar.selectbox(
+        "Case",
         options=case_names,
         index=default_idx,
         key="case_select",
@@ -442,24 +541,45 @@ def main() -> None:
     case_meta = case_data["case_meta"]
 
     path_map, chains = _build_path_map(attack_edges, source_identity)
+    principals = (
+        {e.source_arn for e in attack_edges}
+        | {e.target_arn for e in attack_edges}
+        | {source_identity}
+    )
+    principals_sorted = sorted(principals, key=lambda a: (_short_name(a), a))
 
     if not path_map:
         st.warning("No attack paths found for this case.")
         return
 
-    # Overview dashboard
-    quietest = min(chains, key=lambda c: c.total_detection_cost)
-    max_hops = max(c.hop_count for c in chains)
-    st.subheader("Overview")
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Attack paths", len(chains))
-    with col2:
-        st.metric("Source identity", _short_name(source_identity))
-    with col3:
-        st.metric("Max hops", max_hops)
-    with col4:
-        st.metric("Quietest cost", f"{quietest.total_detection_cost:.4f}")
+    # --- BloodHound-style query sidebar ---
+    st.sidebar.divider()
+    st.sidebar.subheader("Queries")
+    query_options = [
+        ("shortest", "Shortest path to admin"),
+        ("who_admin", "Who can reach admin"),
+        ("blast", "Blast radius"),
+        ("external", "External trusts"),
+        ("wildcards", "Wildcard permissions"),
+        ("privileged", "Privileged principals"),
+    ]
+    query_id = st.sidebar.radio(
+        "Select query",
+        options=[q[0] for q in query_options],
+        format_func=lambda x: next(l for k, l in query_options if k == x),
+        key="query_select",
+    )
+
+    principal_for_blast = source_identity
+    if query_id == "blast":
+        default_idx = principals_sorted.index(source_identity) if source_identity in principals_sorted else 0
+        principal_for_blast = st.sidebar.selectbox(
+            "Principal (blast radius from)",
+            options=principals_sorted,
+            format_func=_short_name,
+            index=default_idx,
+            key="blast_principal",
+        )
 
     api_key_from_env = __import__("os").environ.get("OPENAI_API_KEY", "")
     api_key_override = st.sidebar.text_input(
@@ -470,43 +590,133 @@ def main() -> None:
     )
     api_key = api_key_from_env or (api_key_override or "")
 
-    # Tabs
-    tab_overview, tab_paths, tab_graph, tab_perms, tab_patterns = st.tabs([
-        "Overview", "Attack Paths", "Graph", "Permissions", "Pattern Registry",
-    ])
+    # --- Run query ---
+    engine = QueryEngine.from_case(case_name)
+    query_result: dict[str, Any] | None = None
+    highlight_nodes: set[str] = set()
+    highlight_edges: list[tuple[str, str]] = []
 
-    # Build dropdown options: "AP-01: user → role" etc.
-    path_options = []
-    for pid, chain in path_map.items():
-        label = f"{pid}: {chain.summary_text}"
-        path_options.append((pid, label))
+    if query_id == "shortest":
+        query_result = engine.shortest_path_to_admin()
+        if query_result:
+            highlight_nodes = set(query_result.get("path_nodes", []))
+            highlight_edges = query_result.get("path_edges", [])
+    elif query_id == "who_admin":
+        rows = engine.who_can_reach_admin()
+        query_result = {"results": rows}
+        if rows:
+            first = rows[0]
+            highlight_nodes = set(first.get("path_nodes", []))
+            highlight_edges = first.get("path_edges", [])
+    elif query_id == "blast":
+        rows = engine.blast_radius(principal_for_blast)
+        query_result = {"principal": principal_for_blast, "results": rows}
+        highlight_nodes = {principal_for_blast} | {r["target"] for r in rows}
+    elif query_id == "external":
+        rows = engine.external_trusts()
+        query_result = {"results": rows}
+    elif query_id == "wildcards":
+        rows = engine.wildcard_permissions()
+        query_result = {"results": rows}
+    elif query_id == "privileged":
+        rows = engine.privileged_unused_principals()
+        query_result = {"results": rows}
 
-    path_id = st.sidebar.selectbox(
-        "Select attack path",
-        options=[p[0] for p in path_options],
-        format_func=lambda x: next(l for pid, l in path_options if pid == x),
-        key="path_select",
+    # --- Main: Graph (prominent) + Query results ---
+    st.subheader("Attack graph")
+    html_graph = _render_pyvis_graph(
+        attack_edges,
+        source_identity,
+        highlight_nodes=highlight_nodes if highlight_nodes else None,
+        highlight_edges=highlight_edges if highlight_edges else None,
     )
-    selected_chain = path_map[path_id]
+    if html_graph:
+        st.components.v1.html(html_graph, height=600, scrolling=True)
+    else:
+        st.info("Install `pyvis` to enable interactive graph: `pip install pyvis`")
 
-    # Tab: Overview — path list + quietest path
-    with tab_overview:
-        st.subheader("All attack paths")
-        overview_data = []
-        for pid, chain in path_map.items():
-            overview_data.append({
-                "Path": pid,
-                "Chain": chain.summary_text,
-                "Hops": chain.hop_count,
-                "Cost": f"{chain.total_detection_cost:.4f}",
-                "Success": f"{chain.total_success_probability:.0%}",
-            })
-        st.dataframe(overview_data, use_container_width=True, hide_index=True)
-        st.subheader("Quietest path")
-        st.code(_chain_viz_text(quietest, "Quietest"), language=None)
+    st.divider()
+    st.subheader("Query results")
+    if query_result:
+        if query_id == "shortest":
+            r = query_result
+            st.metric("Path", r.get("path_summary", "—"))
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Hops", r.get("hops", "—"))
+            with col2:
+                st.metric("Detection cost", r.get("detection_cost", "—"))
+            with col3:
+                st.metric("Success", f"{r.get('success_probability', 0):.0%}")
+        elif query_id == "who_admin":
+            rows = query_result.get("results", [])
+            if rows:
+                st.dataframe(
+                    [{"Source": _short_name(r["source"]), "Path": r.get("path_summary", ""), "Hops": r["hops"], "Cost": r["detection_cost"]}
+                    for r in rows],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No principals can reach admin.")
+        elif query_id == "blast":
+            rows = query_result.get("results", [])
+            st.caption(f"Reachable from: {_short_name(query_result.get('principal', ''))}")
+            if rows:
+                st.dataframe(
+                    [{"Target": _short_name(r["target"]), "Hops": r["hops"], "Cost": r["detection_cost"], "Success": f"{r['success_probability']:.0%}"}
+                    for r in rows],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No reachable targets.")
+        elif query_id == "external":
+            rows = query_result.get("results", [])
+            if rows:
+                st.dataframe(
+                    [{"Role": _short_name(r["role_arn"]), "Principal": r.get("principal", "—")} for r in rows],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No external trusts found.")
+        elif query_id == "wildcards":
+            rows = query_result.get("results", [])
+            if rows:
+                st.dataframe(
+                    [{"Identity": _short_name(r["identity"]), "Type": r.get("type", "—"), "Source": r.get("source", "—")} for r in rows],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No wildcard permissions found.")
+        elif query_id == "privileged":
+            rows = query_result.get("results", [])
+            if rows:
+                st.dataframe(
+                    [{"Identity": _short_name(r["identity"]), "Last used": r.get("last_used", "—"), "Note": r.get("note", "—")} for r in rows],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption("No privileged principals found.")
+    else:
+        st.caption("Select a query to see results.")
+
+    # --- Tabs for paths, permissions, patterns (collapsed) ---
+    with st.expander("Attack paths & details", expanded=False):
+        path_options = [(pid, f"{pid}: {chain.summary_text}") for pid, chain in path_map.items()]
+        path_id = st.selectbox(
+            "Select attack path",
+            options=[p[0] for p in path_options],
+            format_func=lambda x: next(l for pid, l in path_options if pid == x),
+            key="path_select",
+        )
+        selected_chain = path_map[path_id]
 
     # Tab: Attack Paths (existing content)
-    with tab_paths:
+    with st.expander("Path details", expanded=False):
         st.subheader(f"Chain {path_id}")
         st.code(_chain_viz_text(selected_chain, path_id), language=None)
 
@@ -663,19 +873,8 @@ def main() -> None:
                     st.session_state[chat_key] = []
                     st.rerun()
 
-    # Tab: Graph
-    with tab_graph:
-        st.subheader("Attack graph")
-        html_graph = _render_pyvis_graph(attack_edges, source_identity)
-        if html_graph:
-            st.components.v1.html(html_graph, height=550, scrolling=True)
-        else:
-            st.info("Install `pyvis` to enable interactive graph: `pip install pyvis`")
-
-    # Tab: Permissions (identity × technique matrix)
-    with tab_perms:
-        st.subheader("Permission matrix — What can I do with these permissions?")
-        sources = list({e.source_arn for e in attack_edges})
+    # Permissions & pattern registry (collapsed)
+    with st.expander("Permission matrix", expanded=False):
         techniques: dict[str, set[str]] = {}
         for e in attack_edges:
             src = _short_name(e.source_arn)
@@ -690,9 +889,7 @@ def main() -> None:
         else:
             st.caption("No permission data.")
 
-    # Tab: Pattern registry
-    with tab_patterns:
-        st.subheader("Attack pattern registry")
+    with st.expander("Attack pattern registry", expanded=False):
         patterns = load_attack_patterns()
         filter_svc = st.text_input("Filter by service or permission", key="pattern_filter")
         pattern_rows = []

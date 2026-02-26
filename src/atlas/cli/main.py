@@ -8,10 +8,10 @@ Commands:
   atlas profile      — Show current AWS identity (who you are logged in as)
   atlas plan         — Run recon + planning (pathfinding.cloud embedded automatically)
   atlas simulate     — Simulate attack path from saved case (no AWS calls)
-  atlas run          — Execute attack path from saved case (uses AWS)
   atlas cases        — List saved cases
   atlas delete-case  — Delete a saved case
   atlas explain      — Explain an attack path from a saved case (no AWS calls)
+  atlas query        — BloodHound-style path, exposure, hygiene queries
   atlas inspect      — Inspect detection profiles
   atlas inspect-key  — Decode AWS account ID from access key ID (offline)
 """
@@ -881,7 +881,7 @@ def plan(
             console.print("\n[yellow]Use --explain with --attack-path AP-XX to explain a specific path.[/yellow]")
 
         console.print(f"\n[dim]  Next:  atlas simulate --case {case} --attack-path AP-XX[/dim]")
-        console.print(f"[dim]         atlas run --case {case} --attack-path AP-XX[/dim]")
+        console.print(f"[dim]         atlas query who-can-reach-admin --case {case}[/dim]")
 
     asyncio.run(_run())
 
@@ -964,200 +964,6 @@ def simulate(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# atlas run — execute from saved case (uses AWS)
-# ═══════════════════════════════════════════════════════════════════════════
-@app.command()
-def run(
-    case: str = CaseOption,
-    attack_path: str = AttackPathOption,
-    dry_run: bool = DryRunOption,
-    force: bool = typer.Option(False, "--force", help="Execute even if plan data is stale (>6h)"),
-    continue_: bool = typer.Option(
-        False, "--continue",
-        help="After execution, replan from the current identity (e.g. assumed role)",
-    ),
-    config_file: Optional[Path] = ConfigOption,
-    profile: Optional[str] = ProfileOption,
-    region: str = RegionOption,
-    account: Optional[str] = AccountOption,
-    verbose: bool = VerboseOption,
-) -> None:
-    """Execute an attack path from a saved case. Output to output/<case>/run/."""
-    _setup(verbose)
-    _show_banner()
-
-    from atlas.core.cases import load_case, run_dir
-    from atlas.core.models import AttackEdge
-
-    try:
-        case_data = load_case(case)
-    except FileNotFoundError:
-        console.print(f"\n[red]Case '{case}' not found.[/red]")
-        console.print(f"[dim]  Run  atlas plan --case {case}  first.[/dim]")
-        raise typer.Exit(1)
-
-    env_model = case_data["env_model"]
-    attack_edges: list[AttackEdge] = case_data["attack_edges"]
-    source_identity = case_data["source_identity"]
-    case_meta = case_data["case_meta"]
-
-    console.print(f"\n[bold]Case[/bold]  [cyan]{case}[/cyan]  →  output/{case}/run/")
-    console.print(f"  Account   {case_meta.get('account_id', '?')}")
-    console.print(f"  Identity  {source_identity.split('/')[-1]}")
-    _check_plan_staleness(case, is_execution=True)
-
-    # Block execution on very stale plans unless --force
-    from atlas.core.cases import plan_age
-    age = plan_age(case)
-    if age and age > 6 * 3600 and not force:
-        console.print(f"\n[bold red]Execution blocked[/bold red] — plan is {age / 3600:.1f}h old.")
-        console.print(f"  The AWS environment may have changed significantly since recon.")
-        console.print(f"  [dim]  Re-plan:   atlas plan --case {case}[/dim]")
-        console.print(f"  [dim]  Override:  atlas run --case {case} --force[/dim]")
-        raise typer.Exit(1)
-
-    # Build path map from saved edges
-    path_map, sorted_chains = _build_path_map(attack_edges, source_identity)
-
-    if not path_map:
-        console.print("\n[red]No attack paths found in this case.[/red]")
-        raise typer.Exit(1)
-
-    # Resolve which path to run
-    if attack_path:
-        ap_key = attack_path.upper()
-        if ap_key not in path_map:
-            _show_attack_paths_from_edges(sorted_chains)
-            console.print(f"\n[red]Unknown path ID '{attack_path}'. Use an ID from the table above.[/red]")
-            raise typer.Exit(1)
-        selected_chain = path_map[ap_key]
-        resolved_id = ap_key
-    else:
-        resolved_id = "AP-01"
-        selected_chain = path_map[resolved_id]
-
-    # Build plan from chain
-    selected_plan = _chain_to_plan(selected_chain, source_identity)
-    _render_chain_viz(selected_chain, resolved_id)
-    _show_plan(selected_plan, path_id=resolved_id)
-
-    if dry_run:
-        console.print("\n[yellow]Dry-run mode — skipping execution.[/yellow]")
-        return
-
-    # Use case account when --account not passed (safety requires allowed_account_ids)
-    effective_account = account or case_meta.get("account_id")
-    if not effective_account:
-        console.print("\n[red]Cannot run: case has no account_id and --account was not provided.[/red]")
-        console.print(f"  [dim]Use:  atlas run --case {case} --account <ACCOUNT_ID>[/dim]")
-        raise typer.Exit(1)
-
-    config = _load_config(config_file, profile, region, effective_account, dry_run=False, noise_budget=10.0)
-
-    async def _execute() -> None:
-        from rich.status import Status
-        from atlas.core.safety import SafetyGate
-        from atlas.core.telemetry import TelemetryRecorder
-        from atlas.executor.engine import ExecutorEngine
-        from atlas.executor.session import SessionManager
-
-        recorder = TelemetryRecorder()
-        safety = SafetyGate(config.safety)
-        rd = run_dir(case)
-
-        # Execute
-        console.print("\n[bold red]═══ EXECUTION ═══[/bold red]")
-        session_mgr = SessionManager(config.aws)
-        session_mgr.set_initial_identity(env_model.metadata.caller_arn)
-
-        executor = ExecutorEngine(config, safety, recorder, session_mgr)
-        with Status("[red]Executing attack plan...[/red]", console=console, spinner="dots"):
-            exec_report = await executor.execute(selected_plan)
-
-        console.print("[green]  Execution complete.[/green]")
-        _print_summary("Execution Report", exec_report.summary())
-
-        # Save to output/<case>/run/
-        (rd / "execution_report.json").write_text(
-            json.dumps(exec_report.summary(), indent=2, default=str)
-        )
-        await recorder.flush_to_file(rd / "telemetry.jsonl")
-
-        # Show credential chain
-        chain = session_mgr.credential_chain
-        if chain:
-            chain_table = Table(title="Credential Chain")
-            chain_table.add_column("Step", justify="right", style="bold white")
-            chain_table.add_column("Identity", style="cyan")
-            chain_table.add_column("Method", style="magenta")
-            for i, entry in enumerate(chain):
-                chain_table.add_row(str(i + 1), entry["identity"], entry["source"])
-            console.print(chain_table)
-
-        console.print(f"\n[green]Saved to output/{case}/run/[/green]")
-
-        # --continue: replan from current identity (e.g. after assume_role)
-        if continue_ and session_mgr.chain_depth > 1:
-            current_arn = session_mgr.current_identity
-            console.print(f"\n[bold cyan]═══ REPLAN FROM CURRENT IDENTITY ═══[/bold cyan]")
-            console.print(f"  [bold]You are now:[/bold]  [cyan]{current_arn}[/cyan]\n")
-
-            from atlas.core.cases import plan_dir, save_plan
-            from atlas.core.telemetry import TelemetryRecorder
-            from atlas.planner.engine import PlannerEngine
-            from atlas.recon.engine import ReconEngine
-
-            pd = plan_dir(case)
-            recon_recorder = TelemetryRecorder()
-            recon_engine = ReconEngine(config, recon_recorder)
-            pivot_session = session_mgr.get_current_session()
-
-            with Status("[cyan]Recon as current identity...[/cyan]", console=console, spinner="dots"):
-                env_model = await recon_engine.run(session=pivot_session)
-            await recon_recorder.flush_to_file(pd / "telemetry_replan.jsonl")
-
-            with Status("[yellow]Building attack graph...[/yellow]", console=console, spinner="dots"):
-                planner = PlannerEngine(config, recon_recorder)
-                result = await planner.plan(env_model)
-
-            path_map = _show_attack_paths(result.attack_graph, result.source_identity)
-            all_edges = result.attack_graph.edges
-            save_plan(case, env_model, all_edges, result.source_identity, result.target)
-
-            paths_data = []
-            for pid, pchain in path_map.items():
-                noise_val = pchain.max_noise_level.value if hasattr(pchain.max_noise_level, "value") else str(pchain.max_noise_level)
-                chain_edges = []
-                for e in pchain.edges:
-                    chain_edges.append({"edge_type": e.edge_type.value, "source": e.source_arn, "target": e.target_arn})
-                first_attack = pchain.edges[0].edge_type.value if pchain.edges else ""
-                paths_data.append({
-                    "id": pid, "attack": first_attack, "target": pchain.final_target_arn,
-                    "hops": pchain.hop_count, "chain": pchain.summary_text,
-                    "detection_cost": pchain.total_detection_cost,
-                    "success_probability": pchain.total_success_probability,
-                    "noise_level": noise_val, "edges": chain_edges,
-                })
-            (pd / "attack_paths.json").write_text(json.dumps(paths_data, indent=2, default=str))
-            if result.plan:
-                (pd / "attack_plan.json").write_text(json.dumps(result.plan.model_dump(), indent=2, default=str))
-
-            if result.plan:
-                matched_id = _resolve_path_id(result.plan, path_map)
-                if matched_id and matched_id in path_map:
-                    _render_chain_viz(path_map[matched_id], matched_id)
-                _show_plan(result.plan, path_id=matched_id)
-            if result.reachable_targets:
-                _show_reachable(result.reachable_targets)
-
-            console.print(f"\n[green]Replan saved. Next steps from current identity:[/green]")
-            console.print(f"[dim]  Assume the role, then:  atlas run --case {case} --attack-path AP-XX[/dim]")
-            console.print(f"[dim]  Or chain again:        atlas run --case {case} --attack-path AP-04 --continue[/dim]")
-
-    asyncio.run(_execute())
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # atlas cases — list all saved cases
 # ═══════════════════════════════════════════════════════════════════════════
 @app.command()
@@ -1179,7 +985,6 @@ def cases() -> None:
     table.add_column("Findings", justify="right", style="red")
     table.add_column("Plan Age", justify="right", no_wrap=True)
     table.add_column("Sim", justify="center", style="dim")
-    table.add_column("Run", justify="center", style="dim")
 
     for c in all_cases:
         name = c.get("name", "?")
@@ -1201,16 +1006,239 @@ def cases() -> None:
             str(c.get("findings", 0)),
             age_str,
             "[green]Yes[/green]" if c.get("has_sim") else "—",
-            "[green]Yes[/green]" if c.get("has_run") else "—",
         )
 
     console.print(f"\n")
     console.print(table)
     console.print(f"\n[dim]  atlas explain --case <case> --attack-path AP-XX[/dim]")
     console.print(f"[dim]  atlas simulate --case <case> --attack-path AP-XX[/dim]")
-    console.print(f"[dim]  atlas run --case <case> --attack-path AP-XX[/dim]")
+    console.print(f"[dim]  atlas query who-can-reach-admin --case <case>[/dim]")
     console.print(f"[dim]  atlas gui --case <case>[/dim]")
     console.print(f"[dim]  atlas delete-case <case>[/dim]")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# atlas query — BloodHound-style queries over persisted graph
+# ═══════════════════════════════════════════════════════════════════════════
+query_app = typer.Typer(help="BloodHound-style path, exposure, and hygiene queries.")
+
+@query_app.command("who-can-reach-admin")
+def _query_who_can_reach_admin(
+    case: str = CaseOption,
+    max_paths: int = typer.Option(20, "--max", "-n", help="Max paths to show"),
+    verbose: bool = VerboseOption,
+) -> None:
+    """Who can reach account root (admin)?"""
+    _setup(verbose)
+    from atlas.query.engine import QueryEngine
+
+    try:
+        engine = QueryEngine.from_case(case)
+    except FileNotFoundError:
+        console.print(f"\n[red]Case '{case}' not found.[/red]")
+        raise typer.Exit(1)
+
+    results = engine.who_can_reach_admin(max_paths=max_paths)
+    if not results:
+        console.print("\n[yellow]No paths to admin found.[/yellow]")
+        return
+
+    table = Table(title=f"Who Can Reach Admin ({len(results)} paths)")
+    table.add_column("Source", style="cyan", no_wrap=False)
+    table.add_column("Hops", justify="right", style="yellow")
+    table.add_column("Detection Cost", justify="right")
+    table.add_column("Success %", justify="right")
+    table.add_column("Path", style="dim", no_wrap=False)
+    for r in results:
+        src_short = r["source"].split("/")[-1] if "/" in r["source"] else r["source"]
+        table.add_row(
+            src_short,
+            str(r["hops"]),
+            f"{r['detection_cost']:.4f}",
+            f"{r['success_probability']*100:.1f}%",
+            r["path_summary"],
+        )
+    console.print()
+    console.print(table)
+
+
+@query_app.command("blast-radius")
+def _query_blast_radius(
+    case: str = CaseOption,
+    principal: str = typer.Argument(..., help="Principal ARN or short name"),
+    max_depth: int = typer.Option(4, "--depth", "-d", help="Max hop depth"),
+    verbose: bool = VerboseOption,
+) -> None:
+    """What is reachable from this principal (exposure)?"""
+    _setup(verbose)
+    from atlas.query.engine import QueryEngine
+
+    try:
+        engine = QueryEngine.from_case(case)
+    except FileNotFoundError:
+        console.print(f"\n[red]Case '{case}' not found.[/red]")
+        raise typer.Exit(1)
+
+    if "/" not in principal and "arn:" not in principal:
+        for edge in engine.attack_edges:
+            if principal in edge.source_arn:
+                principal = edge.source_arn
+                break
+        else:
+            if principal in engine.source_identity:
+                principal = engine.source_identity
+            else:
+                console.print(f"\n[red]Principal '{principal}' not found.[/red]")
+                raise typer.Exit(1)
+
+    results = engine.blast_radius(principal, max_depth=max_depth)
+    if not results:
+        console.print("\n[yellow]No reachable targets.[/yellow]")
+        return
+
+    table = Table(title=f"Blast Radius from {principal.split('/')[-1]} ({len(results)} targets)")
+    table.add_column("Target", style="cyan", no_wrap=False)
+    table.add_column("Hops", justify="right", style="yellow")
+    table.add_column("Detection Cost", justify="right")
+    table.add_column("Success %", justify="right")
+    for r in results:
+        tgt = r["target"].split("/")[-1] if "/" in r["target"] else r["target"]
+        table.add_row(tgt, str(r["hops"]), f"{r['detection_cost']:.4f}", f"{r['success_probability']*100:.1f}%")
+    console.print()
+    console.print(table)
+
+
+@query_app.command("external-trusts")
+def _query_external_trusts(
+    case: str = CaseOption,
+    verbose: bool = VerboseOption,
+) -> None:
+    """Roles with trust policies allowing external principals."""
+    _setup(verbose)
+    from atlas.query.engine import QueryEngine
+
+    try:
+        engine = QueryEngine.from_case(case)
+    except FileNotFoundError:
+        console.print(f"\n[red]Case '{case}' not found.[/red]")
+        raise typer.Exit(1)
+
+    results = engine.external_trusts()
+    if not results:
+        console.print("\n[green]No external trusts found.[/green]")
+        return
+
+    table = Table(title=f"External Trusts ({len(results)})")
+    table.add_column("Role", style="cyan")
+    table.add_column("Principal", style="yellow")
+    table.add_column("Statement", style="dim")
+    for r in results:
+        role_short = r["role_arn"].split("/")[-1] if "/" in r["role_arn"] else r["role_arn"]
+        table.add_row(role_short, str(r["principal"]), r.get("statement", "—"))
+    console.print()
+    console.print(table)
+
+
+@query_app.command("wildcards")
+def _query_wildcards(
+    case: str = CaseOption,
+    verbose: bool = VerboseOption,
+) -> None:
+    """Identities with wildcard actions or resources."""
+    _setup(verbose)
+    from atlas.query.engine import QueryEngine
+
+    try:
+        engine = QueryEngine.from_case(case)
+    except FileNotFoundError:
+        console.print(f"\n[red]Case '{case}' not found.[/red]")
+        raise typer.Exit(1)
+
+    results = engine.wildcard_permissions()
+    if not results:
+        console.print("\n[green]No wildcard permissions found.[/green]")
+        return
+
+    table = Table(title=f"Wildcard Permissions ({len(results)})")
+    table.add_column("Identity", style="cyan")
+    table.add_column("Type", style="yellow")
+    table.add_column("Detail", style="dim")
+    for r in results:
+        ident = r["identity"].split("/")[-1] if "/" in r["identity"] else r["identity"]
+        detail = str(r.get("actions", r.get("resources", [])))[:60]
+        table.add_row(ident, r["type"], detail)
+    console.print()
+    console.print(table)
+
+
+@query_app.command("privileged-principals")
+def _query_privileged_principals(
+    case: str = CaseOption,
+    verbose: bool = VerboseOption,
+) -> None:
+    """Principals with privilege escalation permissions."""
+    _setup(verbose)
+    from atlas.query.engine import QueryEngine
+
+    try:
+        engine = QueryEngine.from_case(case)
+    except FileNotFoundError:
+        console.print(f"\n[red]Case '{case}' not found.[/red]")
+        raise typer.Exit(1)
+
+    results = engine.privileged_unused_principals()
+    if not results:
+        console.print("\n[yellow]No privileged principals found.[/yellow]")
+        return
+
+    table = Table(title=f"Privileged Principals ({len(results)})")
+    table.add_column("Identity", style="cyan")
+    table.add_column("Last Used", style="dim")
+    table.add_column("Note", style="yellow")
+    for r in results:
+        ident = r["identity"].split("/")[-1] if "/" in r["identity"] else r["identity"]
+        table.add_row(ident, r.get("last_used", "?"), r.get("note", ""))
+    console.print()
+    console.print(table)
+
+
+@query_app.command("detection-map")
+def _query_detection_map(
+    edge_type: str = typer.Argument(None, help="Edge type or omit for all"),
+    verbose: bool = VerboseOption,
+) -> None:
+    """CloudTrail + GuardDuty detection mapping for edge types."""
+    _setup(verbose)
+    from atlas.query.rulebook import load_edge_rulebook, get_detection_for_edge
+
+    if edge_type:
+        det = get_detection_for_edge(edge_type)
+        console.print(f"\n[bold]Edge type:[/bold] {edge_type}")
+        console.print(f"  [dim]Confidence:[/dim] {det.get('confidence', '?')}")
+        console.print(f"  [dim]CloudTrail:[/dim] {', '.join(det.get('cloudtrail_events', [])) or '—'}")
+        console.print(f"  [dim]GuardDuty:[/dim] {', '.join(det.get('guardduty_findings', [])) or '—'}")
+        console.print(f"  [dim]Notes:[/dim] {det.get('detection_notes', '—')}")
+        console.print(f"  [dim]Remediation:[/dim] {det.get('remediation', '—')}")
+    else:
+        rules = load_edge_rulebook()
+        table = Table(title="Edge Detection Mapping")
+        table.add_column("Edge Type", style="cyan")
+        table.add_column("CloudTrail", style="dim")
+        table.add_column("GuardDuty", style="yellow")
+        table.add_column("Confidence", style="green")
+        for r in rules:
+            det = get_detection_for_edge(r["edge_type"])
+            table.add_row(
+                r["edge_type"],
+                ", ".join(det.get("cloudtrail_events", []))[:40] or "—",
+                ", ".join(det.get("guardduty_findings", []))[:40] or "—",
+                det.get("confidence", "?"),
+            )
+        console.print()
+        console.print(table)
+
+
+app.add_typer(query_app, name="query")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

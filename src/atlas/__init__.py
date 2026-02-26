@@ -1,10 +1,9 @@
 """
-Atlas v2 — AWS Cloud Adversary Emulation Platform
+Atlas v2 — AWS Cloud Attack Path Mapping (BloodHound-style)
 
-A three-layer architecture for detection-aware adversary emulation:
-  Layer 1 (Recon):    Observe and model the AWS environment
-  Layer 2 (Planner):  Build attack graphs and find optimal paths
-  Layer 3 (Executor): Execute planned actions with stealth constraints
+Two-layer architecture for attack path discovery and simulation:
+  Layer 1 (Recon):   Observe and model the AWS environment (read-only)
+  Layer 2 (Planner): Build attack graphs, find paths, simulate — no execution
 """
 
 __version__ = "2.0.0-alpha"

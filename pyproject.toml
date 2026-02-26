@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "atlas-redteam"
 dynamic = ["version"]
-description = "Next-generation AWS Cloud Adversary Emulation platform"
+description = "AWS Cloud Attack Path Mapping — BloodHound-style graph analysis (recon + planning + simulation, no execution)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"

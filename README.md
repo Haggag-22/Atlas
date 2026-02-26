@@ -20,8 +20,7 @@ Atlas is a next-generation AWS cloud adversary emulation platform. It helps red 
 
 - **Discover** attack paths from a given identity (recon + attack graph)
 - **Plan** multi-step privilege escalation chains
-- **Simulate** execution without making AWS API calls
-- **Execute** attack paths with configurable stealth and safety guardrails
+- **Simulate** execution without making AWS API calls (BloodHound-style — mapping only, no execution)
 - **Explain** attack paths with AI-powered or template-based explanations
 
 ---
@@ -95,11 +94,11 @@ atlas gui --case mycase
 | `atlas config` | Set or show AWS profile and region |
 | `atlas plan` | Run reconnaissance + planning. Uses pathfinding.cloud (65+ verified IAM privesc paths) automatically—syncs on first run if needed. |
 | `atlas simulate` | Simulate an attack path (no AWS calls) |
-| `atlas run` | Execute an attack path (uses AWS) |
 | `atlas cases` | List saved cases |
 | `atlas delete-case` | Delete a saved case |
 | `atlas explain` | Explain an attack path (AI or template) |
 | `atlas gui` | Open the Streamlit web UI |
+| `atlas query` | BloodHound-style queries: who-can-reach-admin, blast-radius, external-trusts, wildcards, privileged-principals, detection-map |
 | `atlas inspect` | Inspect detection profiles for API actions |
 
 ---
@@ -112,10 +111,10 @@ output/<case>/
 ├── plan/               # Recon + planning
 │   ├── env_model.json
 │   ├── attack_edges.json
+│   ├── graph.json
 │   ├── attack_paths.json
 │   └── ...
 ├── sim/                # Simulation results (if run)
-├── run/                # Execution results (if run)
 └── explanations.json   # Cached AI/template explanations
 ```
 

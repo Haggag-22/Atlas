@@ -9,6 +9,7 @@ Directory structure:
     plan/               — recon + planning output
       env_model.json
       attack_edges.json
+      graph.json        — graph summary for fast query load
       attack_paths.json
       attack_plan.json
       plan_result.json
@@ -17,7 +18,6 @@ Directory structure:
     sim/                — simulation output (if run)
       simulation.json
       telemetry.jsonl
-    run/                — execution output (if run)
       execution_report.json
       telemetry.jsonl
     explanations.json   — cached AI/template explanations
@@ -59,13 +59,6 @@ def sim_dir(name: str) -> Path:
     return d
 
 
-def run_dir(name: str) -> Path:
-    """Return the run/execution subdirectory for a case."""
-    d = case_dir(name) / "run"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 def save_plan(
     name: str,
     env_model: Any,
@@ -85,6 +78,20 @@ def save_plan(
     edges_data = [e.model_dump() for e in attack_edges]
     (pd / "attack_edges.json").write_text(
         json.dumps(edges_data, indent=2, default=str)
+    )
+
+    # Graph-ready summary (nodes from edges for fast query load)
+    nodes = set()
+    for e in attack_edges:
+        nodes.add(e.source_arn)
+        nodes.add(e.target_arn)
+    graph_summary = {
+        "node_count": len(nodes),
+        "edge_count": len(edges_data),
+        "nodes": sorted(nodes),
+    }
+    (pd / "graph.json").write_text(
+        json.dumps(graph_summary, indent=2, default=str)
     )
 
     # Findings
@@ -185,7 +192,6 @@ def list_cases() -> list[dict[str, Any]]:
             meta = json.loads(meta_file.read_text())
             # Check which phases exist
             meta["has_sim"] = (sub / "sim").is_dir()
-            meta["has_run"] = (sub / "run").is_dir()
             results.append(meta)
     return results
 

@@ -1,0 +1,170 @@
+# =============================================================================
+# Atlas Edge Rulebook — Consolidated Attack Edge Semantics
+# =============================================================================
+#
+# BloodHound-style: maps permission semantics to control edges.
+# Each rule defines: edge_type, evidence fields, confidence, detection mapping.
+#
+# Evidence: which policy/trust statement produces this edge (for explainability)
+# Confidence: certain | likely | needs_verification
+# Detection: CloudTrail events + GuardDuty findings for each edge type
+#
+# =============================================================================
+
+rules:
+
+  # -------------------------------------------------------------------------
+  # Role Assumption
+  # -------------------------------------------------------------------------
+  - edge_type: can_assume
+    required_permissions: [sts:AssumeRole]
+    evidence_fields: [trust_policy, principal_statement]
+    confidence: certain
+    cloudtrail_events: [AssumeRole]
+    guardduty_findings: []
+    detection_notes: "AssumeRole is logged. Anomalous if source rarely assumes roles."
+    remediation: "Restrict trust policy to specific principals. Use conditions."
+
+  # -------------------------------------------------------------------------
+  # Credential Creation
+  # -------------------------------------------------------------------------
+  - edge_type: can_create_key
+    required_permissions: [iam:CreateAccessKey]
+    evidence_fields: [policy_statement, target_user]
+    confidence: certain
+    cloudtrail_events: [CreateAccessKey]
+    guardduty_findings: [PrivilegeEscalation:IAMUser/CreateAccessKey]
+    detection_notes: "CreateAccessKey triggers GuardDuty privilege escalation."
+    remediation: "Remove CreateAccessKey from non-admin principals."
+
+  - edge_type: can_create_login_profile
+    required_permissions: [iam:CreateLoginProfile]
+    evidence_fields: [policy_statement]
+    confidence: certain
+    cloudtrail_events: [CreateLoginProfile]
+    guardduty_findings: []
+    detection_notes: "CreateLoginProfile is logged in CloudTrail."
+    remediation: "Restrict console access creation."
+
+  - edge_type: can_update_login_profile
+    required_permissions: [iam:UpdateLoginProfile]
+    evidence_fields: [policy_statement]
+    confidence: certain
+    cloudtrail_events: [UpdateLoginProfile]
+    guardduty_findings: []
+    detection_notes: "UpdateLoginProfile is logged."
+    remediation: "Restrict password change permissions."
+
+  # -------------------------------------------------------------------------
+  # Policy Manipulation
+  # -------------------------------------------------------------------------
+  - edge_type: can_attach_policy
+    required_permissions: [iam:AttachUserPolicy, iam:AttachRolePolicy, iam:AttachGroupPolicy]
+    evidence_fields: [policy_statement, target_identity]
+    confidence: certain
+    cloudtrail_events: [AttachUserPolicy, AttachRolePolicy, AttachGroupPolicy]
+    guardduty_findings: [PrivilegeEscalation:IAMUser/AttachRolePolicy]
+    detection_notes: "Policy attachment is high-signal. GuardDuty detects AttachRolePolicy."
+    remediation: "Use permission boundaries. Restrict policy attachment."
+
+  - edge_type: can_put_policy
+    required_permissions: [iam:PutUserPolicy, iam:PutRolePolicy, iam:PutGroupPolicy]
+    evidence_fields: [policy_statement, inline_policy_name]
+    confidence: certain
+    cloudtrail_events: [PutUserPolicy, PutRolePolicy, PutGroupPolicy]
+    guardduty_findings: [PrivilegeEscalation:IAMUser/InlinePolicy]
+    detection_notes: "Inline policy injection triggers GuardDuty."
+    remediation: "Prefer managed policies. Restrict Put*Policy."
+
+  - edge_type: can_modify_trust
+    required_permissions: [iam:UpdateAssumeRolePolicy]
+    evidence_fields: [policy_statement, trust_policy]
+    confidence: certain
+    cloudtrail_events: [UpdateAssumeRolePolicy]
+    guardduty_findings: []
+    detection_notes: "Trust policy modification is logged."
+    remediation: "Lock trust policies. Use SCPs to prevent modification."
+
+  - edge_type: can_create_policy_version
+    required_permissions: [iam:CreatePolicyVersion]
+    evidence_fields: [policy_statement]
+    confidence: certain
+    cloudtrail_events: [CreatePolicyVersion]
+    guardduty_findings: []
+    detection_notes: "Policy version creation is logged."
+    remediation: "Restrict CreatePolicyVersion. Use version locking."
+
+  # -------------------------------------------------------------------------
+  # PassRole + Execution
+  # -------------------------------------------------------------------------
+  - edge_type: can_passrole
+    required_permissions: [iam:PassRole]
+    evidence_fields: [policy_statement, resource_constraint]
+    confidence: likely
+    cloudtrail_events: [PassRole, CreateFunction, RegisterTaskDefinition, RunInstances]
+    guardduty_findings: []
+    detection_notes: "PassRole is implicit in CreateFunction, RunInstances, etc."
+    remediation: "Restrict PassRole to specific role ARNs. Use resource conditions."
+
+  - edge_type: can_passrole_ec2
+    required_permissions: [iam:PassRole, ec2:RunInstances]
+    evidence_fields: [policy_statement, instance_profile]
+    confidence: certain
+    cloudtrail_events: [RunInstances]
+    guardduty_findings: []
+    detection_notes: "RunInstances with instance profile is logged."
+    remediation: "Restrict PassRole. Limit instance profile assignment."
+
+  - edge_type: can_passrole_ecs
+    required_permissions: [iam:PassRole, ecs:RegisterTaskDefinition]
+    evidence_fields: [policy_statement, task_role]
+    confidence: certain
+    cloudtrail_events: [RegisterTaskDefinition]
+    guardduty_findings: []
+    detection_notes: "ECS task definition registration is logged."
+    remediation: "Restrict PassRole. Use least-privilege task roles."
+
+  # -------------------------------------------------------------------------
+  # Lambda Abuse
+  # -------------------------------------------------------------------------
+  - edge_type: can_update_lambda
+    required_permissions: [lambda:UpdateFunctionCode, lambda:PutFunctionConcurrency]
+    evidence_fields: [policy_statement, function_arn]
+    confidence: certain
+    cloudtrail_events: [UpdateFunctionCode]
+    guardduty_findings: []
+    detection_notes: "Lambda code update is logged."
+    remediation: "Restrict Lambda modification. Use code signing."
+
+  # -------------------------------------------------------------------------
+  # Group Membership
+  # -------------------------------------------------------------------------
+  - edge_type: can_add_user_to_group
+    required_permissions: [iam:AddUserToGroup]
+    evidence_fields: [policy_statement, target_group]
+    confidence: certain
+    cloudtrail_events: [AddUserToGroup]
+    guardduty_findings: []
+    detection_notes: "AddUserToGroup is logged."
+    remediation: "Restrict group membership changes."
+
+  # -------------------------------------------------------------------------
+  # Evasion (high detection)
+  # -------------------------------------------------------------------------
+  - edge_type: can_stop_cloudtrail
+    required_permissions: [cloudtrail:StopLogging]
+    evidence_fields: [policy_statement]
+    confidence: certain
+    cloudtrail_events: [StopLogging]
+    guardduty_findings: [Stealth:IAMUser/CloudTrailLoggingDisabled]
+    detection_notes: "StopLogging triggers GuardDuty Stealth finding."
+    remediation: "Restrict CloudTrail modification. Use SCPs."
+
+  - edge_type: can_delete_cloudtrail
+    required_permissions: [cloudtrail:DeleteTrail]
+    evidence_fields: [policy_statement]
+    confidence: certain
+    cloudtrail_events: [DeleteTrail]
+    guardduty_findings: [Stealth:IAMUser/CloudTrailLoggingDisabled]
+    detection_notes: "DeleteTrail triggers GuardDuty."
+    remediation: "Prevent trail deletion via SCP."

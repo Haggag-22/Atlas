@@ -3,7 +3,6 @@
 from atlas.core.config import AtlasConfig
 from atlas.core.graph import EnvironmentGraph
 from atlas.core.models import (
-    ActionResult,
     AttackEdge,
     AttackPlan,
     BackupPlan,
