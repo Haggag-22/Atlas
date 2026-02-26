@@ -23,36 +23,42 @@ from atlas.planner.attack_graph import AttackGraph
 from atlas.planner.chain_finder import ChainFinder
 from atlas.query.engine import QueryEngine
 
+# Structural edges to exclude from graph (add noise, not attack steps)
+_STRUCTURAL_EDGE_TYPES = frozenset({"has_policy", "has_inline_policy", "has_permission_boundary"})
+
 # BloodHound-style edge colors by type (danger level)
 _EDGE_COLORS: dict[str, str] = {
-    "can_assume": "#ef4444",           # red - high impact
-    "can_create_key": "#f97316",       # orange
+    "can_assume": "#ef4444",
+    "can_create_key": "#f97316",
     "can_attach_policy": "#f97316",
     "can_put_policy": "#f97316",
     "can_modify_trust": "#ef4444",
-    "can_passrole": "#eab308",         # yellow
+    "can_passrole": "#eab308",
     "can_passrole_ec2": "#eab308",
     "can_passrole_ecs": "#eab308",
-    "can_update_lambda": "#22c55e",     # green
-    "can_read_s3": "#3b82f6",          # blue
+    "can_update_lambda": "#22c55e",
+    "can_read_s3": "#3b82f6",
     "can_write_s3": "#3b82f6",
     "can_steal_imds_creds": "#ef4444",
     "can_ssm_session": "#eab308",
     "can_stop_cloudtrail": "#ef4444",
     "can_delete_cloudtrail": "#ef4444",
+    "has_policy": "#64748b",
+    "trusts": "#94a3b8",
 }
-_DEFAULT_EDGE_COLOR = "#6b7280"  # gray
+_DEFAULT_EDGE_COLOR = "#64748b"  # slate
 
 # Node colors by type (BloodHound-style)
 _NODE_COLORS: dict[str, str] = {
-    "user": "#60a5fa",      # blue
-    "role": "#4ade80",      # green
-    "group": "#a78bfa",     # purple
-    "root": "#fbbf24",      # amber - admin
-    "s3": "#38bdf8",        # sky
-    "lambda": "#34d399",    # emerald
-    "ec2": "#f472b6",       # pink
-    "default": "#94a3b8",   # slate
+    "user": "#60a5fa",
+    "role": "#4ade80",
+    "group": "#a78bfa",
+    "root": "#fbbf24",
+    "policy": "#64748b",
+    "s3": "#38bdf8",
+    "lambda": "#34d399",
+    "ec2": "#f472b6",
+    "default": "#94a3b8",
 }
 
 _ACTION_NAMES: dict[str, str] = {
@@ -159,6 +165,8 @@ def _arn_type(arn: str) -> str:
         return "Role"
     if ":group/" in arn:
         return "Group"
+    if ":policy/" in arn:
+        return "Policy"
     if "s3:::" in arn or ":s3:" in arn:
         return "S3 Bucket"
     if ":function:" in arn:
@@ -182,6 +190,8 @@ def _node_color(arn: str, is_source: bool = False, is_highlighted: bool = False)
         return _NODE_COLORS["role"]
     if ":group/" in arn:
         return _NODE_COLORS["group"]
+    if ":policy/" in arn:
+        return _NODE_COLORS["policy"]
     if "s3:::" in arn or ":s3:" in arn:
         return _NODE_COLORS["s3"]
     if ":function:" in arn:
@@ -429,6 +439,29 @@ async def _ask_ai_about_path(
     return response.choices[0].message.content or "No response generated."
 
 
+def _filter_graph_edges(
+    attack_edges: list[AttackEdge],
+    *,
+    path_edges: list[tuple[str, str]] | None = None,
+    focus_nodes: set[str] | None = None,
+    exclude_structural: bool = True,
+) -> list[AttackEdge]:
+    """Return edges to show — simplified for readability."""
+    path_set = {(a, b) for a, b in (path_edges or [])}
+    focus = focus_nodes or set()
+
+    if path_set:
+        # Show only the path
+        return [e for e in attack_edges if (e.source_arn, e.target_arn) in path_set]
+    if focus and len(focus) <= 20:
+        # Show induced subgraph (principal + reachable)
+        return [e for e in attack_edges if e.source_arn in focus and e.target_arn in focus]
+    # Exclude structural edges (has_policy etc.) — keeps attack steps only
+    if exclude_structural:
+        return [e for e in attack_edges if e.edge_type.value not in _STRUCTURAL_EDGE_TYPES]
+    return attack_edges
+
+
 def _render_pyvis_graph(
     attack_edges: list[AttackEdge],
     source_identity: str,
@@ -454,37 +487,50 @@ def _render_pyvis_graph(
         font_color="#e2e8f0",
         directed=True,
     )
-    net.set_options("""
-    var options = {
-      "nodes": {
-        "font": {"size": 13, "color": "#e2e8f0"},
+    node_count = len({arn for e in attack_edges for arn in (e.source_arn, e.target_arn)})
+    # Tune physics: more nodes = stronger repulsion, longer springs
+    spring_len = min(180, 80 + node_count)
+    grav = -120 - node_count * 2
+
+    net.set_options(f"""
+    var options = {{
+      "nodes": {{
+        "font": {{"size": 11, "color": "#e2e8f0"}},
         "borderWidth": 2,
-        "shadow": true
-      },
-      "edges": {
-        "arrows": {"to": {"enabled": true}},
-        "smooth": {"type": "continuous"},
-        "width": 1.5
-      },
-      "physics": {
+        "shadow": false
+      }},
+      "edges": {{
+        "arrows": {{"to": {{"enabled": true}}}},
+        "smooth": {{"type": "continuous"}},
+        "width": 1.2
+      }},
+      "physics": {{
         "enabled": true,
         "solver": "forceAtlas2Based",
-        "forceAtlas2Based": {"gravitationalConstant": -80, "springLength": 120}
-      }
-    }
+        "forceAtlas2Based": {{
+          "gravitationalConstant": {grav},
+          "springLength": {spring_len},
+          "springConstant": 0.08,
+          "damping": 0.4,
+          "avoidOverlap": 0.5
+        }}
+      }}
+    }}
     """)
 
     seen: set[str] = set()
+    base_size = 18 if node_count > 25 else 22
+    hl_size = 24 if node_count > 25 else 28
+    label_len = 20 if node_count > 30 else 28
     for e in attack_edges:
         for arn in (e.source_arn, e.target_arn):
             if arn not in seen:
                 seen.add(arn)
-                label = _short_name(arn, max_len=28)
+                label = _short_name(arn, max_len=label_len)
                 is_source = arn == source_identity
                 is_hl = arn in highlight_nodes
                 color = _node_color(arn, is_source=is_source, is_highlighted=is_hl)
-                size = 28 if (is_source or is_hl) else 22
-                border = "#fbbf24" if is_hl else "#475569"
+                size = hl_size if (is_source or is_hl) else base_size
                 net.add_node(
                     arn,
                     label=html.escape(label),
@@ -515,12 +561,12 @@ def main() -> None:
     <style>
     .stApp { background: linear-gradient(180deg, #0a0d12 0%, #0f1419 50%, #0a0d12 100%); }
     [data-testid="stMetricValue"] { color: #4ade80; font-weight: 600; }
+    [data-testid="stSidebar"] { min-width: 280px !important; }
     .stSidebar { background: linear-gradient(180deg, #131820 0%, #0a0d12 100%); }
-    .stSidebar .stSelectbox label { color: #94a3b8 !important; }
+    .stSidebar .stSelectbox label, .stSidebar label { color: #94a3b8 !important; white-space: normal !important; }
+    .stSidebar [data-testid="stMarkdown"] { overflow: visible !important; }
     h1, h2, h3 { color: #e2e8f0 !important; }
     div[data-testid="stExpander"] { background: rgba(26, 31, 38, 0.8); border-radius: 8px; border: 1px solid #334155; }
-    .metric-card { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 1rem 1.25rem; border-radius: 8px; border: 1px solid #334155; }
-    .query-result-header { font-size: 1.1rem; color: #94a3b8; margin-bottom: 0.5rem; }
     .stDataFrame { border-radius: 8px; overflow: hidden; }
     </style>
     """, unsafe_allow_html=True)
@@ -600,7 +646,7 @@ def main() -> None:
     ]
     query_labels = {q[0]: q[1] for q in query_options}
     query_id = st.sidebar.selectbox(
-        "Select query",
+        "Query",
         options=[q[0] for q in query_options],
         format_func=lambda x: query_labels.get(x, x),
         key="query_select",
@@ -610,16 +656,23 @@ def main() -> None:
     if query_id == "blast":
         default_idx = principals_sorted.index(source_identity) if source_identity in principals_sorted else 0
         principal_for_blast = st.sidebar.selectbox(
-            "Principal (blast radius from)",
+            "From principal",
             options=principals_sorted,
             format_func=_short_name,
             index=default_idx,
             key="blast_principal",
         )
 
+    simple_graph = st.sidebar.checkbox(
+        "Simple graph",
+        value=True,
+        help="Show only attack paths (hide policy links). Uncheck for full graph.",
+        key="simple_graph",
+    )
+
     api_key_from_env = __import__("os").environ.get("OPENAI_API_KEY", "")
     api_key_override = st.sidebar.text_input(
-        "OpenAI API key (optional)",
+        "OpenAI API key",
         type="password",
         placeholder="sk-...",
         key="api_key_input",
@@ -647,7 +700,11 @@ def main() -> None:
     elif query_id == "blast":
         rows = engine.blast_radius(principal_for_blast)
         query_result = {"principal": principal_for_blast, "results": rows}
-        highlight_nodes = {principal_for_blast} | {r["target"] for r in rows}
+        # Only highlight when few targets — otherwise graph becomes unreadable yellow blob
+        if len(rows) <= 12:
+            highlight_nodes = {principal_for_blast} | {r["target"] for r in rows}
+        else:
+            highlight_nodes = {principal_for_blast}  # Just highlight source
     elif query_id == "external":
         rows = engine.external_trusts()
         query_result = {"results": rows}
@@ -658,10 +715,24 @@ def main() -> None:
         rows = engine.privileged_unused_principals()
         query_result = {"results": rows}
 
+    # --- Simplify graph for readability ---
+    path_edges_for_filter = highlight_edges if (query_id in ("shortest", "who_admin") and highlight_edges) else None
+    focus_for_filter = highlight_nodes if (query_id == "blast" and 1 < len(highlight_nodes) <= 20) else None
+    graph_edges = _filter_graph_edges(
+        attack_edges,
+        path_edges=path_edges_for_filter,
+        focus_nodes=focus_for_filter,
+        exclude_structural=simple_graph,
+    )
+    if not graph_edges:
+        graph_edges = _filter_graph_edges(attack_edges, exclude_structural=simple_graph)
+
     # --- Main: Graph (prominent) + Query results ---
     st.subheader("Attack graph")
+    if len(graph_edges) < len(attack_edges):
+        st.caption(f"Showing {len(graph_edges)} edges (simplified from {len(attack_edges)})")
     html_graph = _render_pyvis_graph(
-        attack_edges,
+        graph_edges,
         source_identity,
         highlight_nodes=highlight_nodes if highlight_nodes else None,
         highlight_edges=highlight_edges if highlight_edges else None,
@@ -944,9 +1015,11 @@ def main() -> None:
     # Sidebar metadata
     with st.sidebar:
         st.caption("Case metadata")
-        st.write("**Account**", case_meta.get("account_id", "?"))
-        st.write("**Identity**", source_identity.split("/")[-1])
-        st.write("**Output**", f"output/{case_name}/")
+        st.markdown(f"""
+**Acct:** `{case_meta.get("account_id", "?")}`  
+**Identity:** `{_short_name(source_identity, max_len=22)}`  
+**Output:** `output/{case_name}/`
+""")
         st.divider()
         st.caption("Q&A / AI")
         if api_key_from_env:
