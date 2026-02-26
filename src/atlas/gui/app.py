@@ -7,7 +7,9 @@ BloodHound-style GUI for Atlas — query-first, graph visualization, path analys
 from __future__ import annotations
 
 import asyncio
+import csv
 import html
+import io
 import sys
 from typing import Any
 
@@ -130,6 +132,17 @@ _ACTION_NAMES: dict[str, str] = {
 
 def _action_name(edge_type: str) -> str:
     return _ACTION_NAMES.get(edge_type, edge_type.replace("_", " ").title())
+
+
+def _download_csv(rows: list[dict[str, Any]], filename: str, key_suffix: str = "") -> None:
+    """Render a download button for CSV export."""
+    if not rows:
+        return
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows(rows)
+    st.download_button("📥 Export CSV", buf.getvalue(), filename, mime="text/csv", key=f"dl_{key_suffix}")
 
 
 def _short_name(arn: str, max_len: int = 35) -> str:
@@ -497,13 +510,18 @@ def _render_pyvis_graph(
 
 
 def main() -> None:
-    st.set_page_config(page_title="Atlas", page_icon="🛡️", layout="wide")
+    st.set_page_config(page_title="Atlas", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
     st.markdown("""
     <style>
-    .stApp { background-color: #0f1419; }
-    [data-testid="stMetricValue"] { color: #4ade80; }
-    .stSidebar { background: linear-gradient(180deg, #1a1f26 0%, #0f1419 100%); }
+    .stApp { background: linear-gradient(180deg, #0a0d12 0%, #0f1419 50%, #0a0d12 100%); }
+    [data-testid="stMetricValue"] { color: #4ade80; font-weight: 600; }
+    .stSidebar { background: linear-gradient(180deg, #131820 0%, #0a0d12 100%); }
+    .stSidebar .stSelectbox label { color: #94a3b8 !important; }
     h1, h2, h3 { color: #e2e8f0 !important; }
+    div[data-testid="stExpander"] { background: rgba(26, 31, 38, 0.8); border-radius: 8px; border: 1px solid #334155; }
+    .metric-card { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 1rem 1.25rem; border-radius: 8px; border: 1px solid #334155; }
+    .query-result-header { font-size: 1.1rem; color: #94a3b8; margin-bottom: 0.5rem; }
+    .stDataFrame { border-radius: 8px; overflow: hidden; }
     </style>
     """, unsafe_allow_html=True)
     st.title("🛡️ Atlas — Attack Path Explorer")
@@ -552,7 +570,24 @@ def main() -> None:
         st.warning("No attack paths found for this case.")
         return
 
-    # --- BloodHound-style query sidebar ---
+    # --- Top stats bar ---
+    quietest = min(chains, key=lambda c: c.total_detection_cost)
+    max_hops = max(c.hop_count for c in chains)
+    st.markdown("---")
+    stat_col1, stat_col2, stat_col3, stat_col4, stat_col5 = st.columns(5)
+    with stat_col1:
+        st.metric("Attack paths", len(chains), help="Total discovered paths")
+    with stat_col2:
+        st.metric("Source", _short_name(source_identity, max_len=18), help="Starting identity")
+    with stat_col3:
+        st.metric("Max hops", max_hops, help="Longest path length")
+    with stat_col4:
+        st.metric("Quietest cost", f"{quietest.total_detection_cost:.4f}", help="Lowest detection cost path")
+    with stat_col5:
+        st.metric("Account", case_meta.get("account_id", "—")[:12], help="AWS account ID")
+    st.markdown("---")
+
+    # --- BloodHound-style query sidebar (dropdown) ---
     st.sidebar.divider()
     st.sidebar.subheader("Queries")
     query_options = [
@@ -563,10 +598,11 @@ def main() -> None:
         ("wildcards", "Wildcard permissions"),
         ("privileged", "Privileged principals"),
     ]
-    query_id = st.sidebar.radio(
+    query_labels = {q[0]: q[1] for q in query_options}
+    query_id = st.sidebar.selectbox(
         "Select query",
         options=[q[0] for q in query_options],
-        format_func=lambda x: next(l for k, l in query_options if k == x),
+        format_func=lambda x: query_labels.get(x, x),
         key="query_select",
     )
 
@@ -631,78 +667,73 @@ def main() -> None:
         highlight_edges=highlight_edges if highlight_edges else None,
     )
     if html_graph:
-        st.components.v1.html(html_graph, height=600, scrolling=True)
+        st.components.v1.html(html_graph, height=650, scrolling=True)
     else:
         st.info("Install `pyvis` to enable interactive graph: `pip install pyvis`")
 
     st.divider()
-    st.subheader("Query results")
-    if query_result:
-        if query_id == "shortest":
-            r = query_result
-            st.metric("Path", r.get("path_summary", "—"))
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Hops", r.get("hops", "—"))
-            with col2:
-                st.metric("Detection cost", r.get("detection_cost", "—"))
-            with col3:
-                st.metric("Success", f"{r.get('success_probability', 0):.0%}")
-        elif query_id == "who_admin":
-            rows = query_result.get("results", [])
-            if rows:
-                st.dataframe(
-                    [{"Source": _short_name(r["source"]), "Path": r.get("path_summary", ""), "Hops": r["hops"], "Cost": r["detection_cost"]}
-                    for r in rows],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.caption("No principals can reach admin.")
-        elif query_id == "blast":
-            rows = query_result.get("results", [])
-            st.caption(f"Reachable from: {_short_name(query_result.get('principal', ''))}")
-            if rows:
-                st.dataframe(
-                    [{"Target": _short_name(r["target"]), "Hops": r["hops"], "Cost": r["detection_cost"], "Success": f"{r['success_probability']:.0%}"}
-                    for r in rows],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.caption("No reachable targets.")
-        elif query_id == "external":
-            rows = query_result.get("results", [])
-            if rows:
-                st.dataframe(
-                    [{"Role": _short_name(r["role_arn"]), "Principal": r.get("principal", "—")} for r in rows],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.caption("No external trusts found.")
-        elif query_id == "wildcards":
-            rows = query_result.get("results", [])
-            if rows:
-                st.dataframe(
-                    [{"Identity": _short_name(r["identity"]), "Type": r.get("type", "—"), "Source": r.get("source", "—")} for r in rows],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.caption("No wildcard permissions found.")
-        elif query_id == "privileged":
-            rows = query_result.get("results", [])
-            if rows:
-                st.dataframe(
-                    [{"Identity": _short_name(r["identity"]), "Last used": r.get("last_used", "—"), "Note": r.get("note", "—")} for r in rows],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.caption("No privileged principals found.")
-    else:
-        st.caption("Select a query to see results.")
+    query_label = query_labels.get(query_id, query_id)
+    st.subheader(f"📋 Query results — {query_label}")
+    with st.container():
+        if query_result:
+            if query_id == "shortest":
+                r = query_result
+                st.metric("Path", r.get("path_summary", "—"))
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Hops", r.get("hops", "—"))
+                with col2:
+                    st.metric("Detection cost", r.get("detection_cost", "—"))
+                with col3:
+                    st.metric("Success", f"{r.get('success_probability', 0):.0%}")
+            elif query_id == "who_admin":
+                rows = query_result.get("results", [])
+                if rows:
+                    st.metric("Principals", len(rows), help="Can reach admin")
+                    df_data = [{"Source": _short_name(r["source"]), "Path": r.get("path_summary", ""), "Hops": r["hops"], "Cost": r["detection_cost"]} for r in rows]
+                    st.dataframe(df_data, use_container_width=True, hide_index=True)
+                    _download_csv(df_data, f"who_can_reach_admin_{case_name}.csv", key_suffix="who_admin")
+                else:
+                    st.caption("No principals can reach admin.")
+            elif query_id == "blast":
+                rows = query_result.get("results", [])
+                st.caption(f"From: {_short_name(query_result.get('principal', ''))}")
+                if rows:
+                    st.metric("Reachable", len(rows), help="Targets within max depth")
+                    df_data = [{"Target": _short_name(r["target"]), "Hops": r["hops"], "Cost": r["detection_cost"], "Success": f"{r['success_probability']:.0%}"} for r in rows]
+                    st.dataframe(df_data, use_container_width=True, hide_index=True)
+                    _download_csv(df_data, f"blast_radius_{case_name}.csv", key_suffix="blast")
+                else:
+                    st.caption("No reachable targets.")
+            elif query_id == "external":
+                rows = query_result.get("results", [])
+                if rows:
+                    st.metric("Roles", len(rows), help="With external trust")
+                    df_data = [{"Role": _short_name(r["role_arn"]), "Principal": r.get("principal", "—")} for r in rows]
+                    st.dataframe(df_data, use_container_width=True, hide_index=True)
+                    _download_csv(df_data, f"external_trusts_{case_name}.csv", key_suffix="external")
+                else:
+                    st.caption("No external trusts found.")
+            elif query_id == "wildcards":
+                rows = query_result.get("results", [])
+                if rows:
+                    st.metric("Identities", len(rows), help="With wildcard perms")
+                    df_data = [{"Identity": _short_name(r["identity"]), "Type": r.get("type", "—"), "Source": r.get("source", "—")} for r in rows]
+                    st.dataframe(df_data, use_container_width=True, hide_index=True)
+                    _download_csv(df_data, f"wildcards_{case_name}.csv", key_suffix="wildcards")
+                else:
+                    st.caption("No wildcard permissions found.")
+            elif query_id == "privileged":
+                rows = query_result.get("results", [])
+                if rows:
+                    st.metric("Principals", len(rows), help="With escalation perms")
+                    df_data = [{"Identity": _short_name(r["identity"]), "Last used": r.get("last_used", "—"), "Note": r.get("note", "—")} for r in rows]
+                    st.dataframe(df_data, use_container_width=True, hide_index=True)
+                    _download_csv(df_data, f"privileged_principals_{case_name}.csv", key_suffix="privileged")
+                else:
+                    st.caption("No privileged principals found.")
+        else:
+            st.caption("Select a query to see results.")
 
     # --- Tabs for paths, permissions, patterns (collapsed) ---
     with st.expander("Attack paths & details", expanded=False):

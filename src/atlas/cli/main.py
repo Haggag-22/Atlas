@@ -1281,9 +1281,10 @@ def gui(
     import subprocess
     import sys
 
-    # Run as module so Python finds the atlas package (avoids ModuleNotFoundError
-    # when streamlit run path/to/app.py adds the script dir to sys.path)
-    args = [sys.executable, "-m", "streamlit", "run", "atlas.gui.app", "--server.headless", "true"]
+    # Streamlit requires a raw .py file path, not a module name
+    import atlas.gui.app as app_module
+    app_path = app_module.__file__
+    args = [sys.executable, "-m", "streamlit", "run", app_path, "--server.headless", "true"]
     if case:
         args.extend(["--", "--case", case])
 
