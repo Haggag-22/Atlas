@@ -1349,6 +1349,8 @@ class PermissionResolverCollector(BaseCollector):
                         role_name = role.get("RoleName", "")
                         if not role_arn or not role_name:
                             continue
+                        if "/aws-service-role/" in role_arn or role_name.startswith("AWSServiceRoleFor"):
+                            continue  # Skip AWS service roles — focus on user-deployed
                         try:
                             get_resp = await iam.get_role(RoleName=role_name)
                             self._record("iam:GetRole")

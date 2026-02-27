@@ -26,6 +26,16 @@ from atlas.query.engine import QueryEngine
 # Structural edges to exclude from graph (add noise, not attack steps)
 _STRUCTURAL_EDGE_TYPES = frozenset({"has_policy", "has_inline_policy", "has_permission_boundary"})
 
+
+def _is_service_role_arn(arn: str) -> bool:
+    """True if ARN is an AWS service role (noise for user-deployed resources)."""
+    if "/aws-service-role/" in arn:
+        return True
+    name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
+    if name.startswith("AWSServiceRoleFor"):
+        return True
+    return False
+
 # BloodHound-style edge colors by type (danger level)
 _EDGE_COLORS: dict[str, str] = {
     "can_assume": "#ef4444",
@@ -445,21 +455,28 @@ def _filter_graph_edges(
     path_edges: list[tuple[str, str]] | None = None,
     focus_nodes: set[str] | None = None,
     exclude_structural: bool = True,
+    exclude_service_roles: bool = True,
 ) -> list[AttackEdge]:
     """Return edges to show — simplified for readability."""
     path_set = {(a, b) for a, b in (path_edges or [])}
     focus = focus_nodes or set()
 
+    def _keep_edge(e: AttackEdge) -> bool:
+        if exclude_service_roles:
+            if _is_service_role_arn(e.source_arn) or _is_service_role_arn(e.target_arn):
+                return False
+        return True
+
+    edges = attack_edges
     if path_set:
-        # Show only the path
-        return [e for e in attack_edges if (e.source_arn, e.target_arn) in path_set]
-    if focus and len(focus) <= 20:
-        # Show induced subgraph (principal + reachable)
-        return [e for e in attack_edges if e.source_arn in focus and e.target_arn in focus]
-    # Exclude structural edges (has_policy etc.) — keeps attack steps only
-    if exclude_structural:
-        return [e for e in attack_edges if e.edge_type.value not in _STRUCTURAL_EDGE_TYPES]
-    return attack_edges
+        edges = [e for e in edges if (e.source_arn, e.target_arn) in path_set]
+    elif focus and len(focus) <= 20:
+        edges = [e for e in edges if e.source_arn in focus and e.target_arn in focus]
+    elif exclude_structural:
+        edges = [e for e in edges if e.edge_type.value not in _STRUCTURAL_EDGE_TYPES]
+    if exclude_service_roles:
+        edges = [e for e in edges if _keep_edge(e)]
+    return edges
 
 
 def _render_pyvis_graph(
@@ -723,9 +740,12 @@ def main() -> None:
         path_edges=path_edges_for_filter,
         focus_nodes=focus_for_filter,
         exclude_structural=simple_graph,
+        exclude_service_roles=True,
     )
     if not graph_edges:
-        graph_edges = _filter_graph_edges(attack_edges, exclude_structural=simple_graph)
+        graph_edges = _filter_graph_edges(
+            attack_edges, exclude_structural=simple_graph, exclude_service_roles=True
+        )
 
     # --- Main: Graph (prominent) + Query results ---
     st.subheader("Attack graph")

@@ -78,6 +78,8 @@ class IdentityCollector(BaseCollector):
 
                 for raw in raw_roles:
                     role = self._parse_role(raw, account_id)
+                    if self._is_service_role_noise(role):
+                        continue  # Skip AWS service roles — focus on user-deployed resources
                     self._add_role_to_graph(role)
                     stats["roles"] += 1
 
@@ -177,6 +179,37 @@ class IdentityCollector(BaseCollector):
             permission_boundary_arn=pb_arn,
             tags={t["Key"]: t["Value"] for t in raw.get("Tags", [])},
         )
+
+    def _is_service_role_noise(self, role: IAMRole) -> bool:
+        """True if role is AWS-managed service role (noise for user-deployed testing)."""
+        if role.is_service_linked:
+            return True
+        if role.role_name.startswith("AWSServiceRoleFor"):
+            return True
+        # Trust policy only has Service principals (*.amazonaws.com) — no user/role
+        trust = role.trust_policy or {}
+        has_user_or_role = False
+        for stmt in trust.get("Statement", []):
+            principal = stmt.get("Principal") or {}
+            if isinstance(principal, str):
+                has_user_or_role = principal == "*" or "amazonaws.com" not in principal
+                if has_user_or_role:
+                    break
+                continue
+            for key, val in (principal or {}).items():
+                vals = val if isinstance(val, list) else [val]
+                for v in vals:
+                    if not isinstance(v, str):
+                        continue
+                    if key == "AWS":
+                        has_user_or_role = True
+                        break
+                    if key == "Federated" and "amazonaws.com" not in v:
+                        has_user_or_role = True
+                        break
+            if has_user_or_role:
+                break
+        return not has_user_or_role
 
     # ------------------------------------------------------------------
     # Role parsing
