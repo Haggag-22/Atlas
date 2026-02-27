@@ -252,7 +252,7 @@ class AttackGraphBuilder:
         self._add_s3_access_edges(ag)
         self._add_userdata_disclosure_edges(ag)
         self._add_backup_enumeration_edges(ag)
-        self._add_key_account_decode_edges(ag)
+        # can_decode_key removed — focuses on critical techniques, reduces noise
         self._add_public_snapshot_edges(ag)
         self._add_imds_credential_theft_edges(ag)
         self._add_external_ec2_imds_ssrf_edges(ag)

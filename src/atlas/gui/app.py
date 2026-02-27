@@ -25,6 +25,8 @@ from atlas.query.engine import QueryEngine
 
 # Structural edges to exclude from graph (add noise, not attack steps)
 _STRUCTURAL_EDGE_TYPES = frozenset({"has_policy", "has_inline_policy", "has_permission_boundary"})
+# Low-impact techniques to exclude — focus on critical/dangerous paths
+_NOISE_EDGE_TYPES = frozenset({"can_decode_key"})  # Access Key Account Decode
 
 
 def _is_service_role_arn(arn: str) -> bool:
@@ -462,6 +464,8 @@ def _filter_graph_edges(
     focus = focus_nodes or set()
 
     def _keep_edge(e: AttackEdge) -> bool:
+        if e.edge_type.value in _NOISE_EDGE_TYPES:
+            return False
         if exclude_service_roles:
             if _is_service_role_arn(e.source_arn) or _is_service_role_arn(e.target_arn):
                 return False
@@ -474,8 +478,7 @@ def _filter_graph_edges(
         edges = [e for e in edges if e.source_arn in focus and e.target_arn in focus]
     elif exclude_structural:
         edges = [e for e in edges if e.edge_type.value not in _STRUCTURAL_EDGE_TYPES]
-    if exclude_service_roles:
-        edges = [e for e in edges if _keep_edge(e)]
+    edges = [e for e in edges if _keep_edge(e)]
     return edges
 
 
