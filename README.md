@@ -8,6 +8,12 @@
 
 ---
 
+## Attack Knowledge: pathfinding.cloud Integration
+
+Atlas incorporates **all techniques from [pathfinding.cloud](https://github.com/DataDog/pathfinding.cloud)** (parginfd.cloud — Datadog's verified AWS IAM privilege escalation paths). The 65+ attack paths—covering IAM, EC2, Lambda, ECS, Glue, CodeBuild, SageMaker, SSM, CloudFormation, Bedrock, AppRunner, and more—are synced automatically on first run and merged into the attack graph. This gives Atlas comprehensive, battle-tested coverage of real-world AWS privilege escalation techniques.
+
+---
+
 ## Contributing Red Team Techniques
 
 **We welcome contributions of new red team techniques.** If you have attack paths, privilege escalation methods, or AWS abuse techniques you'd like to add to Atlas, please open an issue or submit a pull request. The planner and attack graph are designed to be extended—see `src/atlas/planner/attack_graph.py` and `src/atlas/knowledge/data/api_detection_profiles.yaml` for how techniques are modeled.
@@ -22,6 +28,22 @@ Atlas is a next-generation AWS cloud adversary emulation platform. It helps red 
 - **Plan** multi-step privilege escalation chains
 - **Simulate** execution without making AWS API calls (BloodHound-style — mapping only, no execution)
 - **Explain** attack paths with AI-powered or template-based explanations
+
+---
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **pathfinding.cloud integration** | All 65+ verified IAM privilege escalation paths from pathfinding.cloud (Datadog) — auto-synced on first run |
+| **BloodHound-style queries** | `who-can-reach-admin`, `blast-radius`, `external-trusts`, `wildcards`, `privileged-principals`, `detection-map` |
+| **Detection encyclopedia** | CloudTrail + GuardDuty profiles for each API action; `atlas inspect` shows detection scores |
+| **AI-powered explanations** | LLM-grounded explanations using verified pathfinding.cloud paths |
+| **Streamlit GUI** | Interactive web UI for exploring cases and attack paths |
+| **Access key decoder** | `atlas inspect-key` decodes AWS account ID from access key ID (offline) |
+| **Case management** | Save, list, and delete cases with `atlas cases` and `atlas delete-case` |
+| **Tiered permission recon** | Identity, policy, trust, guardrail, resource, and bruteforce tiers |
+| **Noise budget** | Stealth-aware planning with configurable detection cost limits |
 
 ---
 
@@ -99,7 +121,8 @@ atlas gui --case mycase
 | `atlas explain` | Explain an attack path (AI or template) |
 | `atlas gui` | Open the Streamlit web UI |
 | `atlas query` | BloodHound-style queries: who-can-reach-admin, blast-radius, external-trusts, wildcards, privileged-principals, detection-map |
-| `atlas inspect` | Inspect detection profiles for API actions |
+| `atlas inspect` | Inspect detection profiles for API actions (CloudTrail + GuardDuty) |
+| `atlas inspect-key` | Decode AWS account ID from access key ID (offline) |
 
 ---
 
@@ -120,18 +143,17 @@ output/<case>/
 
 ---
 
-## Attack Techniques (Examples)
+## Attack Techniques
 
-Atlas models techniques such as:
+Atlas models techniques from **pathfinding.cloud** and its own attack pattern registry, including:
 
-- Role assumption (`sts:AssumeRole`)
-- Access key creation (`iam:CreateAccessKey`)
-- Policy attachment (`iam:AttachUserPolicy`, `iam:AttachRolePolicy`)
-- Inline policy injection (`iam:PutUserPolicy`, `iam:PutRolePolicy`)
-- PassRole abuse (Lambda, etc.)
-- Trust policy modification (`iam:UpdateAssumeRolePolicy`)
-- Lambda code injection
-- S3 read/write access
+- **IAM**: Role assumption, access key creation, policy attachment, inline policy injection, PassRole abuse, trust policy modification, permissions boundary manipulation
+- **EC2**: PassRole via instance profile, userdata read/modify, EC2 Instance Connect
+- **Lambda**: PassRole, code/config injection, credential theft
+- **ECS, Glue, CodeBuild, SageMaker**: PassRole and service-specific escalation
+- **SSM**: Session Manager, tag-based enablement
+- **CloudFormation, Bedrock, AppRunner**: PassRole and resource abuse
+- **S3**: Bucket policy, object read/write
 
 Detection costs and noise levels are derived from CloudTrail and GuardDuty profiles in `src/atlas/knowledge/`.
 
