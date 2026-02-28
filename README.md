@@ -8,9 +8,13 @@
 
 ---
 
-## Attack Knowledge: pathfinding.cloud Integration
+## Attack Knowledge: pathfinding.cloud & Hacking the Cloud
 
-Atlas incorporates **all techniques from [pathfinding.cloud](https://github.com/DataDog/pathfinding.cloud)** (parginfd.cloud — Datadog's verified AWS IAM privilege escalation paths). The 65+ attack paths—covering IAM, EC2, Lambda, ECS, Glue, CodeBuild, SageMaker, SSM, CloudFormation, Bedrock, AppRunner, and more—are synced automatically on first run and merged into the attack graph. This gives Atlas comprehensive, battle-tested coverage of real-world AWS privilege escalation techniques.
+Atlas incorporates **all techniques from [pathfinding.cloud](https://github.com/DataDog/pathfinding.cloud)** (parginfd.cloud — Datadog's verified AWS IAM privilege escalation paths). The 65+ attack paths—covering IAM, EC2, Lambda, ECS, Glue, CodeBuild, SageMaker, SSM, CloudFormation, Bedrock, AppRunner, and more—are synced automatically on first run and merged into the attack graph.
+
+Atlas also includes techniques from **[Hacking the Cloud](https://hackingthe.cloud)** — exploitation paths (IMDS credential theft, Lambda SSRF, misconfigured resource policies, OIDC trust misconfig, Cognito self-signup, CloudFront/S3 takeover, PassRole abuse), post-exploitation persistence (GetFederationToken survival, CodeBuild runner persistence, rogue OIDC provider, IAM Roles Anywhere, S3 ACL persistence), and defense evasion (GuardDuty, CloudTrail). Operational tradecraft from Hacking the Cloud is in `post_exploitation_operational.yaml`.
+
+This gives Atlas comprehensive, battle-tested coverage of real-world AWS privilege escalation techniques.
 
 ---
 
@@ -36,6 +40,7 @@ Atlas is a next-generation AWS cloud adversary emulation platform. It helps red 
 | Feature | Description |
 |---------|-------------|
 | **pathfinding.cloud integration** | All 65+ verified IAM privilege escalation paths from pathfinding.cloud (Datadog) — auto-synced on first run |
+| **Hacking the Cloud techniques** | Exploitation, post-exploitation persistence, and defense evasion from hackingthe.cloud |
 | **BloodHound-style queries** | `who-can-reach-admin`, `blast-radius`, `external-trusts`, `wildcards`, `privileged-principals`, `detection-map` |
 | **Detection encyclopedia** | CloudTrail + GuardDuty profiles for each API action; `atlas inspect` shows detection scores |
 | **AI-powered explanations** | LLM-grounded explanations using verified pathfinding.cloud paths |
@@ -145,15 +150,18 @@ output/<case>/
 
 ## Attack Techniques
 
-Atlas models techniques from **pathfinding.cloud** and its own attack pattern registry, including:
+Atlas models techniques from **pathfinding.cloud**, **[Hacking the Cloud](https://hackingthe.cloud)**, and its own attack pattern registry, including:
 
 - **IAM**: Role assumption, access key creation, policy attachment, inline policy injection, PassRole abuse, trust policy modification, permissions boundary manipulation
-- **EC2**: PassRole via instance profile, userdata read/modify, EC2 Instance Connect
-- **Lambda**: PassRole, code/config injection, credential theft
+- **EC2**: PassRole via instance profile, userdata read/modify, EC2 Instance Connect, IMDS credential theft (Hacking the Cloud)
+- **Lambda**: PassRole, code/config injection, credential theft, SSRF-based cred theft (Hacking the Cloud)
 - **ECS, Glue, CodeBuild, SageMaker**: PassRole and service-specific escalation
 - **SSM**: Session Manager, tag-based enablement
 - **CloudFormation, Bedrock, AppRunner**: PassRole and resource abuse
-- **S3**: Bucket policy, object read/write
+- **S3**: Bucket policy, object read/write, ACL persistence (Hacking the Cloud)
+- **Cognito, OIDC, CloudFront**: Self-signup, trust misconfig, domain takeover (Hacking the Cloud)
+- **Post-exploitation**: GetFederationToken survival, rogue OIDC provider, IAM Roles Anywhere (Hacking the Cloud)
+- **Defense evasion**: GuardDuty, CloudTrail evasion (Hacking the Cloud)
 
 Detection costs and noise levels are derived from CloudTrail and GuardDuty profiles in `src/atlas/knowledge/`.
 
