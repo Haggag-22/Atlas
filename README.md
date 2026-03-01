@@ -44,7 +44,7 @@ Atlas is a next-generation AWS cloud adversary emulation platform. It helps red 
 | **BloodHound-style queries** | `who-can-reach-admin`, `blast-radius`, `external-trusts`, `wildcards`, `privileged-principals`, `detection-map` |
 | **Detection encyclopedia** | CloudTrail + GuardDuty profiles for each API action; `atlas inspect` shows detection scores |
 | **AI-powered explanations** | LLM-grounded explanations using verified pathfinding.cloud paths |
-| **Streamlit GUI** | Interactive web UI for exploring cases and attack paths |
+| **k8scout-style GUI** | D3.js force-directed graph, Attack Chain Analyzer, findings, export |
 | **Access key decoder** | `atlas inspect-key` decodes AWS account ID from access key ID (offline) |
 | **Case management** | Save, list, and delete cases with `atlas cases` and `atlas delete-case` |
 | **Tiered permission recon** | Identity, policy, trust, guardrail, resource, and bruteforce tiers |
@@ -124,7 +124,8 @@ atlas gui --case mycase
 | `atlas cases` | List saved cases |
 | `atlas delete-case` | Delete a saved case |
 | `atlas explain` | Explain an attack path (AI or template) |
-| `atlas gui` | Open the Streamlit web UI |
+| `atlas gui` | Open the k8scout-style web UI (D3.js graph, Attack Chain Analyzer) |
+| `atlas export-report` | Export case to JSON for offline GUI viewing |
 | `atlas query` | BloodHound-style queries: who-can-reach-admin, blast-radius, external-trusts, wildcards, privileged-principals, detection-map |
 | `atlas inspect` | Inspect detection profiles for API actions (CloudTrail + GuardDuty) |
 | `atlas inspect-key` | Decode AWS account ID from access key ID (offline) |

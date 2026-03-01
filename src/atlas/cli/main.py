@@ -11,6 +11,8 @@ Commands:
   atlas cases        — List saved cases
   atlas delete-case  — Delete a saved case
   atlas explain      — Explain an attack path from a saved case (no AWS calls)
+  atlas gui          — Open k8scout-style web UI (D3.js graph, Attack Chain Analyzer)
+  atlas export-report — Export case to JSON for offline GUI viewing
   atlas query        — BloodHound-style path, exposure, hygiene queries
   atlas inspect      — Inspect detection profiles
   atlas inspect-key  — Decode AWS account ID from access key ID (offline)
@@ -1271,27 +1273,60 @@ def delete_case_cmd(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# atlas gui — Streamlit web UI for attack path exploration
+# atlas gui — k8scout-style web UI for attack path exploration
 # ═══════════════════════════════════════════════════════════════════════════
 @app.command()
 def gui(
-    case: Optional[str] = typer.Option(None, "--case", "-c", help="Case name (pre-selects in dropdown)"),
+    case: Optional[str] = typer.Option(None, "--case", "-c", help="Case name (pre-loads in UI)"),
+    port: int = typer.Option(8050, "--port", "-p", help="HTTP server port"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open browser automatically"),
 ) -> None:
-    """Open the Atlas GUI — view attack paths in a web browser."""
-    import subprocess
-    import sys
+    """Open the Atlas GUI — k8scout-style attack path explorer in a web browser."""
+    from atlas.core.cases import list_cases
+    from atlas.gui.server import run_server
 
-    # Streamlit requires a raw .py file path, not a module name
-    import atlas.gui.app as app_module
-    app_path = app_module.__file__
-    args = [sys.executable, "-m", "streamlit", "run", app_path, "--server.headless", "true"]
-    if case:
-        args.extend(["--", "--case", case])
+    all_cases = list_cases()
+    if not all_cases:
+        console.print("[red]No saved cases found. Run  atlas plan --case <name>  first.[/red]")
+        raise typer.Exit(1)
+
+    case_to_load = case
+    if not case_to_load:
+        case_to_load = all_cases[0].get("name", "")
+    elif case_to_load not in [c.get("name") for c in all_cases]:
+        console.print(f"[yellow]Case '{case_to_load}' not found. Using first available case.[/yellow]")
+        case_to_load = all_cases[0].get("name", "")
 
     try:
-        subprocess.run(args)
-    except FileNotFoundError:
-        console.print("[red]Streamlit not found. Install with: pip install streamlit[/red]")
+        run_server(port=port, open_browser=not no_browser, case_name=case_to_load)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# atlas export-report — export case to JSON for offline GUI viewing
+# ═══════════════════════════════════════════════════════════════════════════
+@app.command("export-report")
+def export_report(
+    case: str = CaseOption,
+    output: Path = typer.Option(
+        Path("atlas-report.json"),
+        "--output",
+        "-o",
+        path_type=Path,
+        help="Output JSON file path",
+    ),
+) -> None:
+    """Export case to JSON report for offline viewing in the Atlas GUI."""
+    from atlas.gui.export_report import export_report_to_file
+
+    try:
+        path = export_report_to_file(case, output)
+        console.print(f"[green]Exported report to {path}[/green]")
+        console.print("[dim]Open in Atlas GUI: drag-and-drop the file or use Open JSON[/dim]")
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
 

@@ -63,6 +63,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "atlas.knowledge" = ["data/*.yaml"]
+"atlas.gui" = ["web/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

