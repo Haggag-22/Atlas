@@ -577,6 +577,12 @@ def _render_pyvis_graph(
 
 def main() -> None:
     st.set_page_config(page_title="Atlas", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
+
+    # Deprecation notice — new k8scout-style GUI is the default
+    st.error(
+        "**Deprecated:** This is the old Streamlit GUI. Use the new k8scout-style interface instead: "
+        "run `atlas gui` in your terminal (port 8050). Close this tab and run `atlas gui`."
+    )
     st.markdown("""
     <style>
     .stApp { background: linear-gradient(180deg, #0a0d12 0%, #0f1419 50%, #0a0d12 100%); }

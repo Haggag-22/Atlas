@@ -108,9 +108,11 @@ atlas simulate --case mycase --attack-path AP-01
 # Explain an attack path
 atlas explain --case mycase --attack-path AP-01
 
-# Open the GUI
+# Open the GUI (k8scout-style, port 8050)
 atlas gui --case mycase
 ```
+
+> **Note:** If you see the old Streamlit UI (port 8501), you may have run `streamlit run` directly. Use `atlas gui` instead for the new D3.js-based interface.
 
 ---
 
