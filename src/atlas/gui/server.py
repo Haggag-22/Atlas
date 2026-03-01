@@ -109,6 +109,15 @@ class AtlasGUIHandler(SimpleHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path == "/api/cases":
+            try:
+                from atlas.core.cases import list_cases
+                cases = list_cases()
+                self._send_json({"cases": [c.get("name", "") for c in cases if c.get("name")]})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+
         if path.startswith("/api/case/"):
             case_name = path.split("/api/case/", 1)[-1].strip("/")
             if case_name:

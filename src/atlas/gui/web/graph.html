@@ -654,11 +654,25 @@
 
   function loadFromUrl() {
     const params = new URLSearchParams(location.search);
-    const caseName = params.get('case');
-    if (!caseName) return Promise.resolve(null);
-    return fetch(`/api/case/${encodeURIComponent(caseName)}?t=${Date.now()}`).then(r => {
+    let caseName = params.get('case');
+    if (caseName) {
+      return fetch(`/api/case/${encodeURIComponent(caseName)}?t=${Date.now()}`).then(r => {
+        if (!r.ok) throw new Error(r.statusText);
+        return r.json();
+      });
+    }
+    return fetch(`/api/cases?t=${Date.now()}`).then(r => {
       if (!r.ok) throw new Error(r.statusText);
       return r.json();
+    }).then(data => {
+      const cases = data.cases || [];
+      if (cases.length === 0) return null;
+      const firstCase = cases[0];
+      if (history.replaceState) history.replaceState(null, '', `?case=${encodeURIComponent(firstCase)}`);
+      return fetch(`/api/case/${encodeURIComponent(firstCase)}?t=${Date.now()}`).then(r => {
+        if (!r.ok) throw new Error(r.statusText);
+        return r.json();
+      });
     });
   }
 
