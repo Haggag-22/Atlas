@@ -243,10 +243,17 @@
     }
     .detail-panel.visible { display: block; }
     .detail-panel h3 { font-size: 14px; margin-bottom: 8px; color: var(--accent); }
+    .detail-panel .detail-type-badge {
+      display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
+      margin-bottom: 10px; text-transform: uppercase;
+    }
     .detail-panel .detail-row { font-size: 12px; margin-bottom: 6px; }
-    .detail-panel .detail-label { color: var(--text-muted); }
+    .detail-panel .detail-label { color: var(--text-muted); min-width: 90px; display: inline-block; }
     .detail-panel .detail-arn { font-family: var(--font-mono); font-size: 11px; word-break: break-all; }
     .detail-panel .close-btn { float: right; cursor: pointer; color: var(--text-muted); }
+    .detail-panel .detail-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .detail-panel .detail-section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; }
+    .detail-panel .detail-connection { font-size: 11px; padding: 4px 0; font-family: var(--font-mono); }
 
     /* Attack Chain Analyzer modal */
     .modal-overlay {
@@ -830,13 +837,28 @@
     const panel = document.getElementById('detail-panel');
     const title = document.getElementById('detail-title');
     const content = document.getElementById('detail-content');
-    title.textContent = node.name || shortName(node.arn);
+    title.textContent = node.name || shortName(node.arn || node.id);
     const connections = (appData?.edges || []).filter(e => e.source === node.id || e.target === node.id);
+    const kind = node.kind || 'Resource';
+    const typeColors = { User: '#79c0ff', Role: '#a371f7', Group: '#79c0ff', Policy: '#d29922', S3: '#3fb950', Lambda: '#f0883e', EC2: '#f85149', RDS: '#db61a2', KMS: '#7ee787', Secret: '#ffa657 };
+    const typeBg = typeColors[kind] || 'var(--text-muted)';
+    const outgoing = connections.filter(e => e.source === node.id);
+    const incoming = connections.filter(e => e.target === node.id);
+    const connList = connections.slice(0, 8).map(e => {
+      const isOut = e.source === node.id;
+      const otherId = isOut ? e.target : e.source;
+      const other = appData?.nodeMap?.[otherId];
+      const otherName = other?.name || shortName(otherId);
+      const action = getEdgeLabel(e.kind);
+      return `<div class="detail-connection">${isOut ? '→' : '←'} ${otherName} <span style="color:var(--text-muted)">(${action})</span></div>`;
+    }).join('');
     content.innerHTML = `
-      <div class="detail-row"><span class="detail-label">Kind: </span>${node.kind}</div>
-      <div class="detail-row"><span class="detail-label">Risk: </span>${(node.risk_score || 0).toFixed(1)}</div>
-      <div class="detail-row"><span class="detail-label">ARN: </span><span class="detail-arn">${node.arn || node.id}</span></div>
-      <div class="detail-row"><span class="detail-label">Connections: </span>${connections.length}</div>
+      <div class="detail-type-badge" style="background:${typeBg}22;border-left:3px solid ${typeBg}">${kind}</div>
+      <div class="detail-row"><span class="detail-label">Name:</span> ${node.name || shortName(node.arn || node.id)}</div>
+      <div class="detail-row"><span class="detail-label">ARN:</span> <span class="detail-arn">${node.arn || node.id}</span></div>
+      <div class="detail-row"><span class="detail-label">Risk score:</span> ${(node.risk_score || 0).toFixed(1)}</div>
+      <div class="detail-row"><span class="detail-label">Connections:</span> ${connections.length} (${outgoing.length} outgoing, ${incoming.length} incoming)</div>
+      ${connList ? `<div class="detail-section"><div class="detail-section-title">Connected nodes</div>${connList}</div>` : ''}
     `;
     panel.classList.add('visible');
   }

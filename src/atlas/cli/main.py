@@ -59,7 +59,7 @@ def _app_main(
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker"})
+_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker", "hacker_role"})
 
 
 def _is_excluded_identity(arn: str) -> bool:

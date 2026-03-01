@@ -28,11 +28,11 @@ _STRUCTURAL_EDGE_TYPES = frozenset({"has_policy", "has_inline_policy", "has_perm
 # Low-impact techniques to exclude — focus on critical/dangerous paths
 _NOISE_EDGE_TYPES = frozenset({"can_decode_key"})  # Access Key Account Decode
 # IAM users to exclude (login/management accounts that add noise)
-_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker"})
+_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker", "hacker_role"})
 
 
 def _is_excluded_identity(arn: str) -> bool:
-    """True if ARN is an excluded identity (e.g. mac_hacker, windows_hacker)."""
+    """True if ARN is an excluded identity (e.g. mac_hacker, windows_hacker, hacker_role)."""
     if not arn:
         return False
     name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]

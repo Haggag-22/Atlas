@@ -130,11 +130,11 @@ _EDGE_SEVERITY: dict[str, str] = {
 _DEFAULT_SEVERITY = "MEDIUM"
 
 # IAM users to exclude from the graph (login/management accounts that add noise)
-_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker"})
+_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker", "hacker_role"})
 
 
 def _is_excluded_identity(arn: str) -> bool:
-    """Return True if this ARN is an excluded identity (e.g. mac_hacker, windows_hacker)."""
+    """Return True if this ARN is an excluded identity (e.g. mac_hacker, windows_hacker, hacker_role)."""
     if not arn:
         return False
     name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
@@ -308,7 +308,7 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
     if source_identity in node_by_id:
         node_by_id[source_identity]["is_source"] = True
 
-    # Exclude noise identities (e.g. mac_hacker, windows_hacker used for AWS login)
+    # Exclude noise identities (e.g. mac_hacker, windows_hacker, hacker_role)
     nodes = [n for n in node_by_id.values() if not _is_excluded_identity(n["id"])]
 
     # Build graph edges (from attack_edges, exclude structural)
