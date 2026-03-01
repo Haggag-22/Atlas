@@ -27,8 +27,9 @@ from atlas.query.engine import QueryEngine
 _STRUCTURAL_EDGE_TYPES = frozenset({"has_policy", "has_inline_policy", "has_permission_boundary"})
 # Low-impact techniques to exclude — focus on critical/dangerous paths
 _NOISE_EDGE_TYPES = frozenset({"can_decode_key"})  # Access Key Account Decode
-# IAM users to exclude (login/management accounts that add noise)
+# IAM users/roles to exclude (login/management accounts that add noise)
 _EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker", "hacker_role"})
+_EXCLUDED_SUBSTRINGS = frozenset({"hacker_role"})
 
 
 def _is_excluded_identity(arn: str) -> bool:
@@ -36,7 +37,10 @@ def _is_excluded_identity(arn: str) -> bool:
     if not arn:
         return False
     name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
-    return name in _EXCLUDED_IDENTITIES
+    name_lower = name.lower()
+    if name in _EXCLUDED_IDENTITIES:
+        return True
+    return any(sub in name_lower for sub in _EXCLUDED_SUBSTRINGS)
 
 
 def _is_service_role_arn(arn: str) -> bool:

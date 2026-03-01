@@ -129,8 +129,10 @@ _EDGE_SEVERITY: dict[str, str] = {
 }
 _DEFAULT_SEVERITY = "MEDIUM"
 
-# IAM users to exclude from the graph (login/management accounts that add noise)
+# IAM users/roles to exclude from the graph (login/management accounts that add noise)
 _EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker", "hacker_role"})
+# Substring matches (e.g. "cg-hacker_role" contains "hacker_role")
+_EXCLUDED_SUBSTRINGS = frozenset({"hacker_role"})
 
 
 def _is_excluded_identity(arn: str) -> bool:
@@ -138,7 +140,10 @@ def _is_excluded_identity(arn: str) -> bool:
     if not arn:
         return False
     name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
-    return name in _EXCLUDED_IDENTITIES
+    name_lower = name.lower()
+    if name in _EXCLUDED_IDENTITIES:
+        return True
+    return any(sub in name_lower for sub in _EXCLUDED_SUBSTRINGS)
 
 
 # Node type -> display kind

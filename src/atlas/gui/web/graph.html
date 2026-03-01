@@ -656,7 +656,7 @@
     const params = new URLSearchParams(location.search);
     const caseName = params.get('case');
     if (!caseName) return Promise.resolve(null);
-    return fetch(`/api/case/${encodeURIComponent(caseName)}`).then(r => {
+    return fetch(`/api/case/${encodeURIComponent(caseName)}?t=${Date.now()}`).then(r => {
       if (!r.ok) throw new Error(r.statusText);
       return r.json();
     });
@@ -671,9 +671,35 @@
     });
   }
 
+  const EXCLUDED_IDENTITY_SUBSTRINGS = ['hacker_role', 'mac_hacker', 'windows_hacker'];
+  function isExcludedIdentity(arn) {
+    if (!arn) return false;
+    const name = (arn.split('/').pop() || arn.split(':').pop() || '').toLowerCase();
+    return EXCLUDED_IDENTITY_SUBSTRINGS.some(s => name.includes(s));
+  }
+
   function initData(raw) {
     const meta = raw.meta || {};
-    const graph = raw.graph || { nodes: [], edges: [] };
+    let graph = raw.graph || { nodes: [], edges: [] };
+    let attack_paths = raw.attack_paths || [];
+    if (attack_paths.length === 0 && raw.raw?.chains?.length) {
+      const chains = raw.raw.chains;
+      const filtered = chains.filter(c => {
+        const src = c.source_arn || (c.edges?.[0]?.source_arn);
+        const nodes = [src, ...(c.edges || []).map(e => e.target_arn)].filter(Boolean);
+        return !nodes.some(n => isExcludedIdentity(n));
+      });
+      attack_paths = filtered.map((c, i) => {
+        const pathNodes = [c.source_arn || (c.edges?.[0]?.source_arn)];
+        const pathEdges = [];
+        (c.edges || []).forEach(e => {
+          pathNodes.push(e.target_arn);
+          pathEdges.push(typeof e.edge_type === 'string' ? e.edge_type : (e.edge_type?.value || ''));
+        });
+        const summary = pathNodes.map(n => (n || '').split('/').pop() || (n || '').split(':').pop() || n).join(' → ');
+        return { id: `AP-${(i + 1).toString().padStart(2, '0')}`, nodes: pathNodes, edges: pathEdges, summary, hop_count: pathEdges.length, severity: 'HIGH', score: 7 };
+      });
+    }
     const nodes = (graph.nodes || []).map(n => ({
       ...n,
       id: n.id || n.arn,
@@ -690,7 +716,6 @@
       return { source: src, target: tgt, kind: e.kind || '', api_actions: e.api_actions || [] };
     }).filter(e => nodeMap[e.source] && nodeMap[e.target]);
     const risk_findings = raw.risk_findings || [];
-    const attack_paths = raw.attack_paths || [];
     appData = { meta, nodes, edges, risk_findings, attack_paths, nodeMap };
     return appData;
   }
@@ -885,6 +910,9 @@
     pathsList.innerHTML = '';
     if (attack_paths.length === 0) {
       pathsEmpty.style.display = 'block';
+      pathsEmpty.textContent = (appData.nodes?.length > 0 || appData.edges?.length > 0)
+        ? 'No attack paths found for this case. Run atlas plan --case <name> from the project directory if paths are missing.'
+        : 'Load data to see attack paths.';
     } else {
       pathsEmpty.style.display = 'none';
       attack_paths.forEach((p, i) => {

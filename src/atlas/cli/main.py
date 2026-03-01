@@ -60,6 +60,7 @@ def _app_main(
 # Shared helpers
 # ---------------------------------------------------------------------------
 _EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker", "hacker_role"})
+_EXCLUDED_SUBSTRINGS = frozenset({"hacker_role"})
 
 
 def _is_excluded_identity(arn: str) -> bool:
@@ -67,7 +68,10 @@ def _is_excluded_identity(arn: str) -> bool:
     if not arn:
         return False
     name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
-    return name in _EXCLUDED_IDENTITIES
+    name_lower = name.lower()
+    if name in _EXCLUDED_IDENTITIES:
+        return True
+    return any(sub in name_lower for sub in _EXCLUDED_SUBSTRINGS)
 
 
 def _load_config(
