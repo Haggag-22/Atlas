@@ -108,6 +108,11 @@
     .toolbar-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg-dark); }
     .toolbar-actions button.primary:hover { filter: brightness(1.1); }
     .toolbar-file-input { display: none; }
+    .toolbar-case select {
+      padding: 6px 10px; font-size: 12px; background: var(--bg-dark);
+      border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+      min-width: 140px;
+    }
     .toolbar-stats { font-size: 12px; color: var(--text-muted); }
     .toolbar-stats span { margin-right: 12px; }
 
@@ -404,6 +409,11 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
       Atlas
     </div>
+    <div class="toolbar-case">
+      <select id="case-select" title="Select case to load">
+        <option value="">Loading cases...</option>
+      </select>
+    </div>
     <div class="toolbar-search">
       <input type="text" id="search-input" placeholder="Search nodes...">
     </div>
@@ -652,27 +662,39 @@
     return EDGE_LABELS[kind] || kind.replace(/_/g, ' ');
   }
 
+  function loadCase(caseName) {
+    if (!caseName) return Promise.resolve(null);
+    return fetch(`/api/case/${encodeURIComponent(caseName)}?t=${Date.now()}`).then(r => {
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    });
+  }
+
   function loadFromUrl() {
     const params = new URLSearchParams(location.search);
-    let caseName = params.get('case');
-    if (caseName) {
-      return fetch(`/api/case/${encodeURIComponent(caseName)}?t=${Date.now()}`).then(r => {
-        if (!r.ok) throw new Error(r.statusText);
-        return r.json();
-      });
-    }
+    const caseFromUrl = params.get('case');
     return fetch(`/api/cases?t=${Date.now()}`).then(r => {
-      if (!r.ok) throw new Error(r.statusText);
+      if (!r.ok) throw new Error('Cannot list cases: ' + r.status);
       return r.json();
     }).then(data => {
       const cases = data.cases || [];
-      if (cases.length === 0) return null;
-      const firstCase = cases[0];
-      if (history.replaceState) history.replaceState(null, '', `?case=${encodeURIComponent(firstCase)}`);
-      return fetch(`/api/case/${encodeURIComponent(firstCase)}?t=${Date.now()}`).then(r => {
-        if (!r.ok) throw new Error(r.statusText);
-        return r.json();
-      });
+      const sel = document.getElementById('case-select');
+      sel.innerHTML = '<option value="">Select case...</option>' + cases.map(c => `<option value="${c}">${c}</option>`).join('');
+      const toLoad = caseFromUrl && cases.includes(caseFromUrl) ? caseFromUrl : (caseFromUrl || cases[0] || null);
+      if (toLoad) {
+        sel.value = toLoad;
+        if (!caseFromUrl && history.replaceState) history.replaceState(null, '', `?case=${encodeURIComponent(toLoad)}`);
+        return loadCase(toLoad);
+      }
+      return null;
+    }).catch(() => {
+      if (caseFromUrl) {
+        const sel = document.getElementById('case-select');
+        sel.innerHTML = `<option value="${caseFromUrl}">${caseFromUrl}</option>`;
+        sel.value = caseFromUrl;
+        return loadCase(caseFromUrl);
+      }
+      throw new Error('Cannot load cases. Run atlas gui from the project directory.');
     });
   }
 
@@ -1197,6 +1219,32 @@
       populateChainSelect();
     });
     document.getElementById('btn-open-json').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('case-select').addEventListener('change', function() {
+      const caseName = this.value;
+      if (!caseName) return;
+      if (history.replaceState) history.replaceState(null, '', `?case=${encodeURIComponent(caseName)}`);
+      document.getElementById('loading-state')?.remove();
+      const gc = document.querySelector('.graph-container');
+      const showLoad = () => {
+        const el = document.createElement('div');
+        el.className = 'empty-state loading'; el.id = 'loading-state';
+        el.innerHTML = '<div class="loading-spinner"></div><p style="margin-top:12px;">Loading...</p>';
+        gc.querySelector('.empty-state:not(.loading)')?.remove();
+        gc.appendChild(el);
+      };
+      showLoad();
+      loadCase(caseName).then(data => {
+        document.getElementById('loading-state')?.remove();
+        document.querySelector('.graph-container .empty-state')?.remove();
+        if (data) { initData(data); renderGraph(); renderSidebar(); populateChainSelect(); }
+      }).catch(err => {
+        document.getElementById('loading-state')?.remove();
+        const errDiv = document.createElement('div');
+        errDiv.className = 'empty-state';
+        errDiv.innerHTML = `<p>Failed: ${err.message}</p><p style="font-size:11px;margin-top:8px;">Run <code>atlas gui</code> from the project directory (where output/ lives).</p>`;
+        gc.querySelector('.empty-state')?.replaceWith(errDiv);
+      });
+    });
     document.getElementById('file-input').addEventListener('change', (e) => {
       const f = e.target.files?.[0];
       if (f) loadFromFile(f).then(d => {
@@ -1286,12 +1334,15 @@
       })
       .catch(err => {
         hideLoading();
-        const existing = gc.querySelector('.empty-state');
+        gc.querySelector('.empty-state, #loading-state')?.remove();
         const errDiv = document.createElement('div');
         errDiv.className = 'empty-state';
-        errDiv.innerHTML = `<p>Failed to load: ${err.message}</p><div class="drop-zone">Drop JSON file here</div>`;
-        if (existing) existing.replaceWith(errDiv);
-        else gc.appendChild(errDiv);
+        errDiv.innerHTML = `
+          <p><strong>Failed to load:</strong> ${err.message}</p>
+          <p style="font-size:12px;margin-top:12px;color:var(--text-muted);">Run <code>atlas gui --case test</code> from the project directory (where <code>output/</code> lives).</p>
+          <div class="drop-zone" style="margin-top:16px;">Or drop a JSON report file here</div>
+        `;
+        gc.appendChild(errDiv);
       });
   }
 
