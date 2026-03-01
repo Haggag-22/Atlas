@@ -108,6 +108,8 @@
     .toolbar-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg-dark); }
     .toolbar-actions button.primary:hover { filter: brightness(1.1); }
     .toolbar-file-input { display: none; }
+    .toolbar-stats { font-size: 12px; color: var(--text-muted); }
+    .toolbar-stats span { margin-right: 12px; }
 
     /* Main layout */
     .main {
@@ -171,9 +173,23 @@
       cursor: pointer;
     }
     .path-item:hover { border-color: var(--accent); }
+    .path-item.selected { border-color: var(--accent); background: var(--bg-hover); }
+    .path-item .path-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .path-item .path-id { font-weight: 600; color: var(--accent); font-size: 12px; }
     .path-item .path-summary { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
     .path-item .path-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .path-severity-badge {
+      font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+    }
+    .path-severity-badge.critical { background: var(--critical); color: #fff; }
+    .path-severity-badge.high { background: var(--high); color: #fff; }
+    .path-severity-badge.medium { background: var(--medium); color: #000; }
+    .path-severity-badge.low { background: var(--low); color: #000; }
+    .path-filter-row .btn-show-all {
+      padding: 4px 10px; font-size: 11px; border: 1px solid var(--border);
+      border-radius: 4px; background: var(--bg-dark); color: var(--text-muted); cursor: pointer;
+    }
+    .path-filter-row .btn-show-all:hover { border-color: var(--accent); color: var(--accent); }
 
     /* Findings list */
     .finding-item {
@@ -265,6 +281,12 @@
     .modal-close { cursor: pointer; color: var(--text-muted); font-size: 20px; }
     .modal-body { padding: 16px; overflow-y: auto; flex: 1; }
     .chain-select { width: 100%; padding: 8px 12px; margin-bottom: 16px; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+    .ai-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .ai-section h4 { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; }
+    .ai-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .ai-input { flex: 1; min-width: 160px; padding: 6px 10px; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; }
+    .ai-select { padding: 6px 10px; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; }
+    .ai-output { padding: 12px; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; min-height: 60px; }
     .chain-step {
       padding: 12px;
       margin-bottom: 12px;
@@ -275,15 +297,31 @@
     }
     .chain-step .step-num { font-weight: 600; color: var(--accent); }
     .chain-step .step-desc { font-size: 13px; margin-top: 4px; }
+    .chain-step .cmd-wrap { position: relative; margin-top: 8px; }
     .chain-step pre {
-      margin-top: 8px;
-      padding: 10px;
+      padding: 10px 36px 10px 10px;
       background: var(--bg-dark);
       border-radius: 4px;
       font-size: 12px;
       overflow-x: auto;
       border: 1px solid var(--border);
+      margin: 0;
     }
+    .chain-step .copy-btn {
+      position: absolute; top: 8px; right: 8px;
+      padding: 4px 8px; font-size: 11px; border: 1px solid var(--border);
+      border-radius: 4px; background: var(--bg-panel); color: var(--text-muted);
+      cursor: pointer;
+    }
+    .chain-step .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .chain-step .copy-btn.copied { color: var(--low); }
+    .chain-summary-card {
+      padding: 12px; margin-bottom: 16px; background: var(--bg-dark);
+      border: 1px solid var(--border); border-radius: 6px;
+    }
+    .chain-summary-card .summary-severity { font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+    .chain-summary-card .summary-text { font-size: 13px; color: var(--text-muted); }
+    .chain-step .phase-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 2px; }
 
     /* Finding modal */
     .finding-modal .severity-badge {
@@ -321,6 +359,19 @@
 
     /* Loading */
     .loading { text-align: center; padding: 40px; color: var(--text-muted); }
+    .loading-spinner {
+      display: inline-block; width: 24px; height: 24px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Mini-map */
+    .minimap {
+      position: absolute; bottom: 12px; right: 12px;
+      width: 120px; height: 80px; background: var(--bg-panel);
+      border: 1px solid var(--border); border-radius: 6px;
+      overflow: hidden; cursor: pointer;
+    }
 
     /* Drag overlay */
     body.dragover::after {
@@ -355,10 +406,12 @@
       <button class="severity-filter medium" data-sev="MEDIUM">MEDIUM</button>
       <button class="severity-filter low" data-sev="LOW">LOW</button>
     </div>
+    <div class="toolbar-stats" id="toolbar-stats"></div>
     <div class="toolbar-actions">
       <button id="btn-fit">Fit</button>
       <button id="btn-cluster">Cluster</button>
       <button id="btn-export">Export</button>
+      <button id="btn-copy-report">Copy Report</button>
       <button id="btn-analyzer" class="primary">Attack Chain Analyzer</button>
       <button id="btn-open-json">Open JSON</button>
       <input type="file" id="file-input" class="toolbar-file-input" accept=".json">
@@ -368,6 +421,7 @@
   <div class="main">
     <div class="graph-container">
       <svg id="graph-svg"></svg>
+      <div class="minimap" id="minimap" style="display:none;"></div>
       <div class="detail-panel" id="detail-panel">
         <span class="close-btn" id="detail-close">&times;</span>
         <h3 id="detail-title">Node Details</h3>
@@ -382,6 +436,9 @@
       </div>
       <div class="sidebar-content">
         <div class="sidebar-panel active" id="panel-paths">
+          <div class="path-filter-row" id="path-filter-row" style="display:none; margin-bottom:8px;">
+            <button class="btn-show-all" id="btn-show-all">Show all paths</button>
+          </div>
           <div class="empty-state" id="paths-empty">Load data to see attack paths.</div>
           <div id="paths-list"></div>
         </div>
@@ -418,7 +475,7 @@
 
   <!-- Attack Chain Analyzer Modal -->
   <div class="modal-overlay" id="analyzer-modal">
-    <div class="modal">
+    <div class="modal analyzer-modal">
       <div class="modal-header">
         <h2>Attack Chain Analyzer</h2>
         <span class="modal-close" id="analyzer-close">&times;</span>
@@ -427,7 +484,21 @@
         <select class="chain-select" id="chain-select">
           <option value="">Select identity / attack path...</option>
         </select>
+        <div id="chain-summary-card" class="chain-summary-card" style="display:none;"></div>
         <div id="chain-steps"></div>
+        <div class="ai-section">
+          <h4>AI Explanation</h4>
+          <div class="ai-controls">
+            <input type="password" id="ai-api-key" placeholder="OpenAI API key (optional)" class="ai-input">
+            <select id="ai-model" class="ai-select">
+              <option value="gpt-4o">GPT-4o</option>
+              <option value="gpt-4o-mini">GPT-4o Mini</option>
+              <option value="gpt-4-turbo">GPT-4 Turbo</option>
+            </select>
+            <button id="btn-ai-generate" class="btn-primary">Generate</button>
+          </div>
+          <div id="ai-output" class="ai-output"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -549,7 +620,11 @@
   };
 
   let appData = null;
-  let graphState = { simulation: null, zoom: null, nodeById: {}, edgeById: {}, activeSeverities: new Set(['CRITICAL','HIGH','MEDIUM','LOW']) };
+  let graphState = {
+    simulation: null, zoom: null, nodeById: {}, edgeById: {},
+    activeSeverities: new Set(['CRITICAL','HIGH','MEDIUM','LOW']),
+    selectedPathId: null  // When set, show only this path's nodes/edges
+  };
 
   function shortName(arn) {
     if (!arn) return '';
@@ -615,6 +690,7 @@
 
   function renderGraph() {
     if (!appData) return;
+    updateToolbarStats();
     const svg = d3.select('#graph-svg');
     svg.selectAll('*').remove();
     const width = svg.node().getBoundingClientRect().width;
@@ -624,13 +700,26 @@
     svg.call(zoom);
     graphState.zoom = zoom;
 
-    const { nodes, edges, nodeMap } = appData;
-    const filteredNodes = nodes.filter(n => {
-      const sev = n.risk_score >= 9 ? 'CRITICAL' : n.risk_score >= 7 ? 'HIGH' : n.risk_score >= 5 ? 'MEDIUM' : 'LOW';
-      return graphState.activeSeverities.has(sev) || n.risk_score === 0;
-    });
-    const nodeIds = new Set(filteredNodes.map(n => n.id));
-    const filteredEdges = edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+    const { nodes, edges, nodeMap, attack_paths } = appData;
+    let filteredNodes, filteredEdges;
+    if (graphState.selectedPathId) {
+      const path = attack_paths?.find(p => p.id === graphState.selectedPathId);
+      if (path?.nodes) {
+        const pathIds = new Set(path.nodes);
+        filteredNodes = nodes.filter(n => pathIds.has(n.id));
+        filteredEdges = edges.filter(e => pathIds.has(e.source) && pathIds.has(e.target));
+      } else {
+        graphState.selectedPathId = null;
+      }
+    }
+    if (!filteredNodes) {
+      filteredNodes = nodes.filter(n => {
+        const sev = n.risk_score >= 9 ? 'CRITICAL' : n.risk_score >= 7 ? 'HIGH' : n.risk_score >= 5 ? 'MEDIUM' : 'LOW';
+        return graphState.activeSeverities.has(sev) || n.risk_score === 0;
+      });
+      const nodeIds = new Set(filteredNodes.map(n => n.id));
+      filteredEdges = edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+    }
 
     const linkData = filteredEdges.map(e => ({
       ...e,
@@ -639,30 +728,42 @@
     }));
 
     const simulation = d3.forceSimulation(filteredNodes)
-      .force('link', d3.forceLink(linkData).id(d => d.id).distance(120))
-      .force('charge', d3.forceManyBody().strength(-400))
+      .force('link', d3.forceLink(linkData).id(d => d.id).distance(200))
+      .force('charge', d3.forceManyBody().strength(-600))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(40));
+      .force('collision', d3.forceCollide().radius(65));
 
     graphState.simulation = simulation;
     graphState.nodeById = {};
     filteredNodes.forEach(n => { graphState.nodeById[n.id] = n; });
 
+    const isPathOnly = !!graphState.selectedPathId;
     const link = g.append('g').attr('class', 'links')
       .selectAll('line')
       .data(linkData)
       .join('line')
-      .attr('stroke', '#30363d')
-      .attr('stroke-opacity', 0.8)
-      .attr('stroke-width', 1.5);
+      .attr('stroke', isPathOnly ? 'var(--accent)' : '#30363d')
+      .attr('stroke-opacity', isPathOnly ? 1 : 0.8)
+      .attr('stroke-width', isPathOnly ? 2.5 : 1.5);
 
     const linkLabels = g.append('g').attr('class', 'link-labels')
       .selectAll('text')
       .data(linkData)
       .join('text')
-      .attr('font-size', 10)
+      .attr('font-size', 9)
       .attr('fill', '#8b949e')
+      .attr('opacity', 0)
+      .attr('pointer-events', 'none')
       .text(d => getEdgeLabel(d.kind));
+    link.on('mouseover', function(ev, d) {
+      const idx = linkData.indexOf(d);
+      d3.select(this).attr('stroke-width', 2.5).attr('stroke-opacity', 1);
+      d3.select(this.parentNode.parentNode).selectAll('.link-labels text').filter((_, i) => i === idx).attr('opacity', 1);
+    }).on('mouseout', function(ev, d) {
+      const idx = linkData.indexOf(d);
+      d3.select(this).attr('stroke-width', 1.5).attr('stroke-opacity', 0.8);
+      d3.select(this.parentNode.parentNode).selectAll('.link-labels text').filter((_, i) => i === idx).attr('opacity', 0);
+    });
 
     const node = g.append('g').attr('class', 'nodes')
       .selectAll('g')
@@ -699,6 +800,30 @@
         .attr('y', d => (d.source.y + d.target.y) / 2);
       node.attr('transform', d => `translate(${d.x},${d.y})`);
     });
+    simulation.on('end', () => updateMinimap(filteredNodes, linkData));
+  }
+
+  function updateMinimap(nodes, linkData) {
+    const mm = document.getElementById('minimap');
+    if (!nodes.length) { mm.style.display = 'none'; return; }
+    mm.style.display = 'block';
+    mm.innerHTML = '';
+    const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const w = maxX - minX || 1, h = maxY - minY || 1;
+    const pad = 20;
+    const scale = Math.min(96 / (w + pad), 56 / (h + pad));
+    const svg = d3.select(mm).append('svg').attr('width', 120).attr('height', 80).attr('viewBox', '0 0 120 80');
+    const g = svg.append('g').attr('transform', `translate(60,40) scale(${scale}) translate(${-(minX + maxX)/2},${-(minY + maxY)/2})`);
+    g.selectAll('line').data(linkData).join('line')
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y)
+      .attr('stroke', '#30363d').attr('stroke-width', 0.5);
+    g.selectAll('circle').data(nodes).join('circle')
+      .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', 2)
+      .attr('fill', d => getKindColor(d.kind));
+    mm.onclick = () => fitGraph();
   }
 
   function showDetailPanel(node) {
@@ -716,6 +841,16 @@
     panel.classList.add('visible');
   }
 
+  function updateToolbarStats() {
+    const el = document.getElementById('toolbar-stats');
+    if (!appData) { el.textContent = ''; return; }
+    const n = appData.nodes?.length || 0;
+    const e = appData.edges?.length || 0;
+    const f = appData.risk_findings?.length || 0;
+    const p = appData.attack_paths?.length || 0;
+    el.innerHTML = `<span>${n} nodes</span><span>${e} edges</span><span>${f} findings</span><span>${p} paths</span>`;
+  }
+
   function renderSidebar() {
     if (!appData) return;
     const { attack_paths, risk_findings } = appData;
@@ -724,6 +859,7 @@
     const findingsList = document.getElementById('findings-list');
     const findingsEmpty = document.getElementById('findings-empty');
 
+    document.getElementById('path-filter-row').style.display = graphState.selectedPathId ? 'block' : 'none';
     pathsList.innerHTML = '';
     if (attack_paths.length === 0) {
       pathsEmpty.style.display = 'block';
@@ -731,23 +867,38 @@
       pathsEmpty.style.display = 'none';
       attack_paths.forEach((p, i) => {
         const el = document.createElement('div');
-        el.className = 'path-item';
+        const pid = p.id || `AP-${i + 1}`;
+        const sev = (p.severity || 'MEDIUM').toUpperCase();
+        const sevClass = sev.toLowerCase();
+        el.className = 'path-item' + (graphState.selectedPathId === pid ? ' selected' : '');
         el.innerHTML = `
-          <div class="path-id">${p.id || `AP-${i + 1}`}</div>
+          <div class="path-header">
+            <span class="path-severity-badge ${sevClass}">${sev}</span>
+            <span class="path-id">${pid}</span>
+          </div>
           <div class="path-summary">${(p.summary || '').slice(0, 80)}${(p.summary || '').length > 80 ? '...' : ''}</div>
-          <div class="path-meta">${p.hop_count || 0} hops · cost ${p.detection_cost ?? '-'}</div>
+          <div class="path-meta">${p.hop_count || 0} hops · score ${(p.score ?? 0).toFixed(1)}</div>
         `;
-        el.onclick = () => { document.getElementById('chain-select').value = p.id; updateChainSteps(); };
+        el.onclick = () => {
+          graphState.selectedPathId = graphState.selectedPathId === pid ? null : pid;
+          document.getElementById('chain-select').value = pid;
+          updateChainSteps();
+          renderSidebar();
+          renderGraph();
+        };
         pathsList.appendChild(el);
       });
     }
 
+    const activeSevs = graphState.activeSeverities;
+    const filteredFindings = risk_findings.filter(f => activeSevs.has((f.severity || 'MEDIUM').toUpperCase()));
     findingsList.innerHTML = '';
-    if (risk_findings.length === 0) {
+    if (filteredFindings.length === 0) {
       findingsEmpty.style.display = 'block';
+      findingsEmpty.textContent = risk_findings.length === 0 ? 'Load data to see findings.' : 'No findings match the selected severities.';
     } else {
       findingsEmpty.style.display = 'none';
-      risk_findings.forEach((f, i) => {
+      filteredFindings.forEach((f, i) => {
         const el = document.createElement('div');
         el.className = `finding-item ${(f.severity || 'MEDIUM').toLowerCase()}`;
         el.innerHTML = `
@@ -788,16 +939,64 @@
     });
   }
 
+  async function generateAiExplanation() {
+    const pathId = document.getElementById('chain-select').value;
+    const apiKey = document.getElementById('ai-api-key').value.trim();
+    const outEl = document.getElementById('ai-output');
+    const btn = document.getElementById('btn-ai-generate');
+    const caseName = appData?.meta?.case || new URLSearchParams(location.search).get('case') || '';
+    if (!pathId) {
+      outEl.textContent = 'Select an attack path first.';
+      return;
+    }
+    if (!caseName) {
+      outEl.textContent = 'Load data from server (URL with ?case=CASE_NAME) to use AI explanation.';
+      return;
+    }
+    btn.disabled = true;
+    outEl.textContent = 'Generating...';
+    try {
+      const model = document.getElementById('ai-model').value;
+      const res = await fetch('/api/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ case_name: caseName, path_id: pathId, api_key: apiKey, model })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        outEl.textContent = data.error || 'Request failed.';
+        return;
+      }
+      outEl.textContent = data.explanation || 'No explanation returned.';
+    } catch (e) {
+      outEl.textContent = 'Error: ' + (e.message || 'Network error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  const PHASE_LABELS = ['Initial Access', 'Privilege Escalation', 'Execution', 'Credential Access', 'Lateral Movement', 'Persistence'];
+
   function updateChainSteps() {
     const sel = document.getElementById('chain-select');
     const pathId = sel.value;
     const stepsDiv = document.getElementById('chain-steps');
+    const summaryCard = document.getElementById('chain-summary-card');
     stepsDiv.innerHTML = '';
+    summaryCard.style.display = 'none';
     if (!pathId || !appData) return;
     const path = appData.attack_paths.find(p => p.id === pathId);
     if (!path || !path.nodes || !path.edges) return;
     const { nodeMap } = appData;
+    const sev = (path.severity || 'MEDIUM').toLowerCase();
+    summaryCard.style.display = 'block';
+    summaryCard.innerHTML = `
+      <span class="path-severity-badge ${sev}">${(path.severity || 'MEDIUM').toUpperCase()}</span>
+      <div class="summary-text">${(path.summary || '').slice(0, 120)}${(path.summary || '').length > 120 ? '...' : ''}</div>
+      <div style="font-size:11px; margin-top:4px; color:var(--text-muted);">${path.hop_count || 0} steps · score ${(path.score ?? 0).toFixed(1)}</div>
+    `;
     path.edges.forEach((edgeKind, i) => {
+      const phaseIdx = Math.min(i, PHASE_LABELS.length - 1);
       const srcId = path.nodes[i];
       const tgtId = path.nodes[i + 1];
       const src = nodeMap[srcId];
@@ -807,12 +1006,28 @@
       const cmd = getCliCommand(edgeKind, srcArn, tgtArn);
       const step = document.createElement('div');
       step.className = 'chain-step';
+      const stepId = 'step-cmd-' + i;
       step.innerHTML = `
+        <div class="phase-label">${PHASE_LABELS[phaseIdx]}</div>
         <div class="step-num">Step ${i + 1}: ${getEdgeLabel(edgeKind)}</div>
         <div class="step-desc">${shortName(srcArn)} → ${shortName(tgtArn)}</div>
-        <pre>${cmd}</pre>
+        <div class="cmd-wrap">
+          <pre id="${stepId}">${cmd}</pre>
+          <button class="copy-btn" data-copy-for="${stepId}">Copy</button>
+        </div>
       `;
       stepsDiv.appendChild(step);
+    });
+    stepsDiv.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.onclick = () => {
+        const pre = document.getElementById(btn.dataset.copyFor);
+        if (!pre) return;
+        navigator.clipboard.writeText(pre.textContent).then(() => {
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+        });
+      };
     });
   }
 
@@ -860,6 +1075,15 @@
     URL.revokeObjectURL(a.href);
   }
 
+  function copyReportToClipboard() {
+    if (!appData) { alert('No data to copy'); return; }
+    const meta = appData.meta || {};
+    const text = `Atlas Attack Path Report\nCase: ${meta.case || '-'} | Account: ${meta.account_id || '-'}\n\n` +
+      `Attack Paths (${appData.attack_paths?.length || 0}):\n${JSON.stringify(appData.attack_paths, null, 2)}\n\n` +
+      `Findings (${appData.risk_findings?.length || 0}):\n${JSON.stringify(appData.risk_findings, null, 2)}`;
+    navigator.clipboard.writeText(text).then(() => alert('Report copied to clipboard'));
+  }
+
   function applySearch() {
     const q = (document.getElementById('search-input').value || '').toLowerCase();
     if (!q || !appData) return;
@@ -893,7 +1117,7 @@
           graphState.activeSeverities.add(sev);
         }
         btn.classList.toggle('active', graphState.activeSeverities.has(sev));
-        if (appData) renderGraph();
+        if (appData) { renderGraph(); renderSidebar(); }
       });
     });
     document.querySelectorAll('.severity-filter').forEach(btn => {
@@ -903,6 +1127,7 @@
     document.getElementById('btn-fit').addEventListener('click', fitGraph);
     document.getElementById('btn-cluster').addEventListener('click', clusterGraph);
     document.getElementById('btn-export').addEventListener('click', exportReportHtml);
+    document.getElementById('btn-copy-report').addEventListener('click', copyReportToClipboard);
     document.getElementById('btn-analyzer').addEventListener('click', () => {
       document.getElementById('analyzer-modal').classList.add('visible');
       populateChainSelect();
@@ -920,7 +1145,16 @@
     document.getElementById('detail-close').addEventListener('click', () => document.getElementById('detail-panel').classList.remove('visible'));
     document.getElementById('analyzer-close').addEventListener('click', () => document.getElementById('analyzer-modal').classList.remove('visible'));
     document.getElementById('finding-close').addEventListener('click', () => document.getElementById('finding-modal').classList.remove('visible'));
-    document.getElementById('chain-select').addEventListener('change', updateChainSteps);
+    document.getElementById('chain-select').addEventListener('change', () => {
+      updateChainSteps();
+      document.getElementById('ai-output').textContent = '';
+    });
+    document.getElementById('btn-ai-generate').addEventListener('click', generateAiExplanation);
+    document.getElementById('btn-show-all').addEventListener('click', () => {
+      graphState.selectedPathId = null;
+      renderSidebar();
+      renderGraph();
+    });
 
     document.getElementById('search-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') applySearch(); });
 
@@ -933,16 +1167,40 @@
       if (f && (f.name.endsWith('.json') || f.type === 'application/json')) {
         loadFromFile(f).then(d => {
           document.querySelector('.graph-container .empty-state')?.remove();
+          document.getElementById('loading-state')?.remove();
           initData(d); renderGraph(); renderSidebar(); populateChainSelect();
         }).catch(alert);
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        document.querySelectorAll('.modal-overlay.visible').forEach(m => m.classList.remove('visible'));
+        document.getElementById('detail-panel')?.classList.remove('visible');
+      }
+      if (e.key === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        fitGraph();
       }
     });
   }
 
   function main() {
     wireEvents();
+    const gc = document.querySelector('.graph-container');
+    const showLoading = () => {
+      const el = document.createElement('div');
+      el.className = 'empty-state loading';
+      el.id = 'loading-state';
+      el.innerHTML = '<div class="loading-spinner"></div><p style="margin-top:12px;">Loading case...</p>';
+      const existing = gc.querySelector('.empty-state, #loading-state');
+      if (existing) existing.replaceWith(el);
+      else gc.appendChild(el);
+    };
+    const hideLoading = () => document.getElementById('loading-state')?.remove();
+    showLoading();
     loadFromUrl()
       .then(data => {
+        hideLoading();
         if (data) {
           initData(data);
           renderGraph();
@@ -963,7 +1221,7 @@
         }
       })
       .catch(err => {
-        const gc = document.querySelector('.graph-container');
+        hideLoading();
         const existing = gc.querySelector('.empty-state');
         const errDiv = document.createElement('div');
         errDiv.className = 'empty-state';

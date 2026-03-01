@@ -59,6 +59,17 @@ def _app_main(
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker"})
+
+
+def _is_excluded_identity(arn: str) -> bool:
+    """True if ARN is an excluded identity (login accounts that add noise)."""
+    if not arn:
+        return False
+    name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
+    return name in _EXCLUDED_IDENTITIES
+
+
 def _load_config(
     config_file: Path | None,
     profile: str | None,
@@ -1608,6 +1619,16 @@ def _build_path_map(
     finder = ChainFinder(ag, max_depth=4, max_chains=50)
     chains = finder.find_chains(source_identity)
 
+    def _chain_has_excluded(c: Any) -> bool:
+        if _is_excluded_identity(c.source_arn):
+            return True
+        for e in c.edges:
+            if _is_excluded_identity(e.target_arn):
+                return True
+        return False
+
+    chains = [c for c in chains if not _chain_has_excluded(c)]
+
     path_map: dict[str, Any] = {}
     for i, chain in enumerate(chains):
         path_map[f"AP-{i + 1:02d}"] = chain
@@ -2040,6 +2061,16 @@ def _show_attack_paths(attack_graph: Any, source_arn: str) -> dict[str, Any]:
     finder = ChainFinder(attack_graph, max_depth=4, max_chains=50)
     chains = finder.find_chains(source_arn)
 
+    def _chain_has_excluded(c: Any) -> bool:
+        if _is_excluded_identity(c.source_arn):
+            return True
+        for e in c.edges:
+            if _is_excluded_identity(e.target_arn):
+                return True
+        return False
+
+    chains = [c for c in chains if not _chain_has_excluded(c)]
+
     # Also find chains from external entry points (anonymous attacker scenarios)
     external_sources = ["external::ec2-imds-ssrf"]
     for ext in external_sources:
@@ -2048,6 +2079,8 @@ def _show_attack_paths(attack_graph: Any, source_arn: str) -> dict[str, Any]:
             # Deduplicate by (final_target, edge sequence)
             seen = {(c.final_target_arn, tuple(e.edge_type.value for e in c.edges)) for c in chains}
             for c in ext_chains:
+                if _chain_has_excluded(c):
+                    continue
                 key = (c.final_target_arn, tuple(e.edge_type.value for e in c.edges))
                 if key not in seen:
                     seen.add(key)

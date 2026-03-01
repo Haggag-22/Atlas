@@ -7,6 +7,7 @@ Serves static files and provides /api/case/<name> for case data.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -15,6 +16,72 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from atlas.gui.export_report import export_case_to_report
+
+
+def _run_explain(case_name: str, path_id: str, api_key: str, model: str = "gpt-4o-mini") -> str:
+    """Generate AI explanation for an attack path."""
+    from atlas.core.cases import load_case
+    from atlas.planner.chain_finder import ChainFinder
+    from atlas.planner.attack_graph import AttackGraph
+    from atlas.planner.explainer import AttackPathExplainer
+    from atlas.gui.export_report import _is_excluded_identity
+
+    case_data = load_case(case_name)
+    attack_edges = case_data["attack_edges"]
+    source_identity = case_data.get("source_identity", "")
+    env_model = case_data["env_model"]
+
+    ag = AttackGraph()
+    for e in attack_edges:
+        ag.add_edge(e)
+    finder = ChainFinder(ag, max_depth=4, max_chains=50)
+    chains = finder.find_chains(source_identity)
+
+    def _chain_has_excluded(c):
+        if _is_excluded_identity(c.source_arn):
+            return True
+        for e in c.edges:
+            if _is_excluded_identity(e.target_arn):
+                return True
+        return False
+
+    chains = [c for c in chains if not _chain_has_excluded(c)]
+
+    ap_key = path_id.upper()
+    chain = next((c for i, c in enumerate(chains) if f"AP-{i + 1:02d}" == ap_key), None)
+    if not chain or not chain.edges:
+        return "Attack path not found."
+
+    explainer = AttackPathExplainer()
+    if api_key:
+        import os
+        os.environ["OPENAI_API_KEY"] = api_key
+        explainer._api_key = api_key
+
+    edge = chain.edges[0]
+    source_info = {"type": "unknown"}
+    target_info = {"type": "unknown"}
+    if env_model.graph.has_node(edge.target_arn):
+        target_info.update(env_model.graph.get_node_data(edge.target_arn))
+
+    def _get_policies(arn: str) -> list[str]:
+        policies = []
+        for target_arn, edge_data in env_model.graph.outgoing(arn):
+            if edge_data.get("edge_type") == "has_policy":
+                policies.append(target_arn.split("/")[-1])
+        return policies[:5]
+
+    source_policies = _get_policies(edge.source_arn)
+    target_policies = _get_policies(edge.target_arn)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(
+            explainer.explain(edge, source_info, target_info, source_policies, target_policies, model=model)
+        )
+    finally:
+        loop.close()
 
 
 def _get_web_dir() -> Path:
@@ -29,6 +96,14 @@ class AtlasGUIHandler(SimpleHTTPRequestHandler):
         self.web_dir = _get_web_dir()
         super().__init__(*args, directory=str(self.web_dir), **kwargs)
 
+    def _send_json(self, data: Any, status: int = 200) -> None:
+        body = json.dumps(data, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -39,12 +114,7 @@ class AtlasGUIHandler(SimpleHTTPRequestHandler):
             if case_name:
                 try:
                     report = export_case_to_report(case_name)
-                    body = json.dumps(report, default=str).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+                    self._send_json(report)
                     return
                 except FileNotFoundError as e:
                     self.send_error(404, str(e))
@@ -58,6 +128,27 @@ class AtlasGUIHandler(SimpleHTTPRequestHandler):
 
         self.path = path
         return super().do_GET()
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/explain":
+            try:
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len)
+                data = json.loads(body) if body else {}
+                case_name = data.get("case_name", "")
+                path_id = data.get("path_id", "")
+                api_key = data.get("api_key", "")
+                model = data.get("model", "gpt-4o-mini")
+                if not case_name or not path_id:
+                    self._send_json({"error": "case_name and path_id required"}, 400)
+                    return
+                result = _run_explain(case_name, path_id, api_key, model=model)
+                self._send_json({"explanation": result})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+            return
+        self.send_error(404)
 
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress default logging."""

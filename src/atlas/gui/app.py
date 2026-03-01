@@ -27,6 +27,16 @@ from atlas.query.engine import QueryEngine
 _STRUCTURAL_EDGE_TYPES = frozenset({"has_policy", "has_inline_policy", "has_permission_boundary"})
 # Low-impact techniques to exclude — focus on critical/dangerous paths
 _NOISE_EDGE_TYPES = frozenset({"can_decode_key"})  # Access Key Account Decode
+# IAM users to exclude (login/management accounts that add noise)
+_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker"})
+
+
+def _is_excluded_identity(arn: str) -> bool:
+    """True if ARN is an excluded identity (e.g. mac_hacker, windows_hacker)."""
+    if not arn:
+        return False
+    name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
+    return name in _EXCLUDED_IDENTITIES
 
 
 def _is_service_role_arn(arn: str) -> bool:
@@ -224,6 +234,17 @@ def _build_path_map(
 
     finder = ChainFinder(ag, max_depth=4, max_chains=50)
     chains = finder.find_chains(source_identity)
+
+    # Exclude chains that start from or pass through excluded identities
+    def _chain_has_excluded(chain: AttackChain) -> bool:
+        if _is_excluded_identity(chain.source_arn):
+            return True
+        for edge in chain.edges:
+            if _is_excluded_identity(edge.target_arn):
+                return True
+        return False
+
+    chains = [c for c in chains if not _chain_has_excluded(c)]
 
     path_map: dict[str, Any] = {}
     for i, chain in enumerate(chains):
@@ -465,6 +486,8 @@ def _filter_graph_edges(
 
     def _keep_edge(e: AttackEdge) -> bool:
         if e.edge_type.value in _NOISE_EDGE_TYPES:
+            return False
+        if _is_excluded_identity(e.source_arn) or _is_excluded_identity(e.target_arn):
             return False
         if exclude_service_roles:
             if _is_service_role_arn(e.source_arn) or _is_service_role_arn(e.target_arn):

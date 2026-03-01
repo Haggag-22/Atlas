@@ -16,6 +16,45 @@ from atlas.planner.attack_graph import AttackGraph
 from atlas.planner.chain_finder import ChainFinder
 
 
+# Edge type -> human-readable action title (for "Identity can X")
+_EDGE_ACTION_TITLES: dict[str, str] = {
+    "can_assume": "assume role",
+    "can_create_key": "create access keys",
+    "can_modify_trust": "modify trust policy",
+    "can_attach_policy": "attach policies",
+    "can_put_policy": "inject inline policies",
+    "can_passrole": "abuse PassRole",
+    "can_create_admin_user": "create admin user",
+    "can_create_backdoor_role": "create backdoor role",
+    "can_steal_imds_creds": "steal IMDS credentials",
+    "can_update_lambda": "update Lambda code",
+    "can_read_s3": "read S3",
+    "can_write_s3": "write S3",
+    "can_ssm_session": "start SSM session",
+    "can_read_userdata": "read EC2 user data",
+    "can_get_federation_token": "obtain federation token",
+    "can_create_roles_anywhere_persistence": "create Roles Anywhere persistence",
+    "can_create_rogue_oidc_persistence": "create rogue OIDC provider",
+}
+# Edge type -> professional rule ID (no EDGE-CAN_ASSUME)
+_EDGE_RULE_IDS: dict[str, str] = {
+    "can_assume": "PRIVESC-ASSUME-ROLE",
+    "can_create_key": "PRIVESC-CREATE-ACCESS-KEY",
+    "can_modify_trust": "PRIVESC-MODIFY-TRUST",
+    "can_attach_policy": "PRIVESC-ATTACH-POLICY",
+    "can_put_policy": "PRIVESC-PUT-INLINE-POLICY",
+    "can_passrole": "PRIVESC-PASSROLE",
+    "can_create_admin_user": "PRIVESC-CREATE-ADMIN",
+    "can_create_backdoor_role": "PRIVESC-CREATE-BACKDOOR",
+    "can_steal_imds_creds": "CRITICAL-IMDS-CREDENTIAL-THEFT",
+    "can_update_lambda": "PRIVESC-LAMBDA-CODE-INJECTION",
+    "can_read_s3": "S3-READ-ACCESS",
+    "can_write_s3": "S3-WRITE-ACCESS",
+    "can_ssm_session": "SSM-SESSION-ACCESS",
+    "can_read_userdata": "EC2-USERDATA-DISCLOSURE",
+    "can_get_federation_token": "PERSISTENCE-FEDERATION-TOKEN",
+}
+
 # Edge type -> severity for derived findings
 _EDGE_SEVERITY: dict[str, str] = {
     "can_assume": "CRITICAL",
@@ -90,6 +129,18 @@ _EDGE_SEVERITY: dict[str, str] = {
 }
 _DEFAULT_SEVERITY = "MEDIUM"
 
+# IAM users to exclude from the graph (login/management accounts that add noise)
+_EXCLUDED_IDENTITIES = frozenset({"mac_hacker", "windows_hacker"})
+
+
+def _is_excluded_identity(arn: str) -> bool:
+    """Return True if this ARN is an excluded identity (e.g. mac_hacker, windows_hacker)."""
+    if not arn:
+        return False
+    name = arn.split("/")[-1] if "/" in arn else arn.split(":")[-1]
+    return name in _EXCLUDED_IDENTITIES
+
+
 # Node type -> display kind
 _NODE_KIND: dict[str, str] = {
     "iam_user": "User",
@@ -126,6 +177,29 @@ def _short_name(arn: str, max_len: int = 35) -> str:
     if len(name) > max_len:
         name = name[: max_len - 3] + "..."
     return name
+
+
+def _format_label(name: str) -> str:
+    """Format node label for professional display: Title Case, no redundant prefixes."""
+    if not name:
+        return ""
+    # Strip common prefixes (cg-, aws-, etc.)
+    for prefix in ("cg-", "aws-", "cg"):
+        if name.lower().startswith(prefix) and len(name) > len(prefix):
+            rest = name[len(prefix) :].lstrip("-")
+            if rest:
+                name = rest
+    # Split on hyphens/underscores and title-case each part
+    parts = name.replace("_", " ").replace("-", " ").split()
+    result = []
+    for p in parts:
+        if p.isupper():
+            result.append(p)
+        elif p.lower() in ("iam", "aws", "ec2", "s3", "rds", "kms", "lambda", "api"):
+            result.append(p.upper())
+        else:
+            result.append(p.capitalize())
+    return " ".join(result)
 
 
 def _arn_to_kind(arn: str, node_type: str | None) -> str:
@@ -196,7 +270,8 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
     node_by_id: dict[str, dict] = {}
     for nid, attrs in env_model.graph.raw.nodes(data=True):
         node_type = attrs.get("node_type", "")
-        label = attrs.get("label", _short_name(nid))
+        raw_label = attrs.get("label", _short_name(nid))
+        label = _format_label(raw_label)
         node_by_id[nid] = {
             "id": nid,
             "name": label,
@@ -212,7 +287,7 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
         if arn not in node_by_id:
             node_by_id[arn] = {
                 "id": arn,
-                "name": _short_name(arn),
+                "name": _format_label(_short_name(arn)),
                 "kind": _arn_to_kind(arn, None),
                 "arn": arn,
                 "node_type": "",
@@ -233,7 +308,8 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
     if source_identity in node_by_id:
         node_by_id[source_identity]["is_source"] = True
 
-    nodes = list(node_by_id.values())
+    # Exclude noise identities (e.g. mac_hacker, windows_hacker used for AWS login)
+    nodes = [n for n in node_by_id.values() if not _is_excluded_identity(n["id"])]
 
     # Build graph edges (from attack_edges, exclude structural)
     structural = {"has_policy", "has_inline_policy", "has_permission_boundary"}
@@ -242,6 +318,8 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
         if e.edge_type.value in structural:
             continue
         if _is_service_role(e.source_arn) or _is_service_role(e.target_arn):
+            continue
+        if _is_excluded_identity(e.source_arn) or _is_excluded_identity(e.target_arn):
             continue
         edges.append({
             "source": e.source_arn,
@@ -260,6 +338,9 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
         sev = str(fd.get("severity", "MEDIUM")).upper().replace(" ", "_")
         if sev not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
             sev = "MEDIUM"
+        res_arn = fd.get("resource_arn", "")
+        if _is_excluded_identity(res_arn):
+            continue
         findings.append({
             "rule_id": fd.get("finding_id", "FINDING"),
             "severity": sev,
@@ -267,7 +348,7 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
             "title": fd.get("title", ""),
             "description": fd.get("description", ""),
             "remediation": fd.get("remediation", ""),
-            "affected_nodes": [fd.get("resource_arn", "")],
+            "affected_nodes": [res_arn],
             "evidence": fd.get("details", {}),
         })
 
@@ -283,12 +364,21 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
         if key in seen_edge_findings:
             continue
         seen_edge_findings.add(key)
-        action_name = e.edge_type.value.replace("_", " ").title()
+        if _is_excluded_identity(e.source_arn) or _is_excluded_identity(e.target_arn):
+            continue
+        action_title = _EDGE_ACTION_TITLES.get(
+            e.edge_type.value,
+            e.edge_type.value.replace("_", " ").replace("can ", ""),
+        )
+        rule_id = _EDGE_RULE_IDS.get(
+            e.edge_type.value,
+            f"PRIVESC-{e.edge_type.value.upper().replace('_', '-')}",
+        )
         findings.append({
-            "rule_id": f"EDGE-{e.edge_type.value.upper()}",
+            "rule_id": rule_id,
             "severity": sev,
             "score": _edge_risk_score(e.edge_type.value),
-            "title": f"Identity can {action_name}",
+            "title": f"Identity can {action_title}",
             "description": f"From {_short_name(e.source_arn)} to {_short_name(e.target_arn)}. "
             + (e.notes or ""),
             "remediation": "Apply least-privilege. Remove unnecessary permissions.",
@@ -296,20 +386,33 @@ def export_case_to_report(case_name: str) -> dict[str, Any]:
             "evidence": {"api_actions": e.api_actions, "edge_type": e.edge_type.value},
         })
 
-    # Attack paths
+    # Attack paths (with severity from max edge risk in path)
     attack_paths = []
-    for i, chain in enumerate(chains):
+    path_index = 0
+    for chain in chains:
         path_nodes = [chain.source_arn]
         path_edges = []
+        max_score = 0.0
+        if _is_excluded_identity(chain.source_arn):
+            continue
         for edge in chain.edges:
             path_nodes.append(edge.target_arn)
             path_edges.append(edge.edge_type.value)
+            max_score = max(max_score, _edge_risk_score(edge.edge_type.value))
+        if any(_is_excluded_identity(n) for n in path_nodes):
+            continue
+        path_index += 1
+        severity = (
+            "CRITICAL" if max_score >= 9 else "HIGH" if max_score >= 7 else "MEDIUM" if max_score >= 5 else "LOW"
+        )
         attack_paths.append({
-            "id": f"AP-{i + 1:02d}",
+            "id": f"AP-{path_index:02d}",
             "nodes": path_nodes,
             "edges": path_edges,
             "hop_count": chain.hop_count,
             "summary": chain.summary_text,
+            "severity": severity,
+            "score": max_score,
             "detection_cost": chain.total_detection_cost,
             "success_probability": chain.total_success_probability,
             "chain": chain.model_dump() if hasattr(chain, "model_dump") else {},

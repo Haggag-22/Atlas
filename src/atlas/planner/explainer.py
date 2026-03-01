@@ -95,6 +95,7 @@ class AttackPathExplainer:
         target_info: dict[str, Any],
         source_policies: list[str],
         target_policies: list[str],
+        model: str = "gpt-4o-mini",
     ) -> str:
         """Generate a human-readable explanation of the attack path.
 
@@ -108,7 +109,7 @@ class AttackPathExplainer:
 
         if self.has_llm:
             try:
-                return await self._llm_explain(context)
+                return await self._llm_explain(context, model=model)
             except Exception as exc:
                 logger.debug("llm_explain_failed", error=str(exc))
                 # Fall through to template
@@ -148,7 +149,7 @@ class AttackPathExplainer:
             "notes": edge.notes,
         }
 
-    async def _llm_explain(self, context: dict[str, Any]) -> str:
+    async def _llm_explain(self, context: dict[str, Any], model: str = "gpt-4o-mini") -> str:
         """Use OpenAI to generate an explanation, grounded in pathfinding.cloud."""
         import openai
 
@@ -186,7 +187,7 @@ class AttackPathExplainer:
         user_prompt = self._format_prompt(context)
 
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
