@@ -1313,6 +1313,14 @@ def gui(
     except FileNotFoundError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+    except OSError as e:
+        if getattr(e, "errno", None) in (98, 10048) or "Address already in use" in str(e):
+            console.print(f"[red]Port {port} is already in use.[/red]")
+            console.print(f"[dim]Use a different port:[/dim] [cyan]atlas gui --case {case_to_load} --port 8051[/cyan]")
+            console.print("[dim]Or stop the process using the port (e.g.  lsof -i :8050  then  kill <PID>)[/dim]")
+        else:
+            console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
